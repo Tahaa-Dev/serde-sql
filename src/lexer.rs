@@ -1,7 +1,9 @@
 use crate::{
-    Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder, IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType, SupportedDBs
+    Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
+    IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType, SupportedDBs,
 };
 
+use indexmap::IndexMap;
 use nom::{
     IResult, Parser,
     branch::alt,
@@ -32,6 +34,190 @@ pub(crate) fn parse_statement(
 
     match output.as_str() {
         "TABLE" => {
+            let mut columns = IndexMap::new();
+
+            let parse_col_def = |input| {
+                let (input, col_name) = parse_ident(input)?;
+                let (input, _) = multispace1(input)?;
+
+                let (input, sql_type) = alt((
+                    tag_no_case("DOUBLE PRECISION"),
+                    tag_no_case("TIMESTAMP WITH TIME ZONE"),
+                    tag_no_case("TIMESTAMP WITHOUT TIME ZONE"),
+                    tag_no_case("CHARACTER VARYING"),
+                    tag_no_case("INTERVAL YEAR"),
+                    tag_no_case("INTERVAL MONTH"),
+                    tag_no_case("INTERVAL DAY"),
+                    tag_no_case("INTERVAL HOUR"),
+                    tag_no_case("INTERVAL MINUTE"),
+                    tag_no_case("INTERVAL SECOND"),
+                    tag_no_case("INTERVAL YEAR TO MONTH"),
+                    tag_no_case("INTERVAL DAY TO HOUR"),
+                    tag_no_case("INTERVAL DAY TO MINUTE"),
+                    tag_no_case("INTERVAL DAY TO SECOND"),
+                    tag_no_case("INTERVAL HOUR TO MINUTE"),
+                    tag_no_case("INTERVAL HOUR TO SECOND"),
+                    tag_no_case("INTERVAL MINUTE TO SECOND"),
+                    alphanumeric1,
+                ))
+                .parse(input)?;
+
+                let (input, args) = opt((
+                    multispace0,
+                    delimited(
+                        tag("("),
+                        separated_list1(
+                            (multispace0, tag(","), multispace0),
+                            map_res(digit1, |s: &str| s.parse::<usize>()),
+                        ),
+                        tag(")"),
+                    ),
+                ))
+                .parse(input)?;
+
+                let (_, args) = args.unwrap_or(("", Vec::new()));
+
+                let ty = sql_type.to_uppercase();
+                let sql_type = match ty.as_str() {
+                    // Numeric
+                    "SMALLINT" | "INT2" => SqlType::SmallInt,
+                    "INTEGER" | "INT" | "INT4" => SqlType::Integer,
+                    "BIGINT" | "INT8" => SqlType::BigInt,
+                    "REAL" | "FLOAT4" => SqlType::Real,
+                    "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
+                    "DECIMAL" => SqlType::Decimal(
+                        args.get(0).copied(),
+                        args.get(1).copied(),
+                    ),
+                    "NUMERIC" => SqlType::Numeric(
+                        args.get(0).copied(),
+                        args.get(1).copied(),
+                    ),
+
+                    // String/Text
+                    "CHAR" | "CHARACTER" => {
+                        SqlType::Char(args.get(0).copied().unwrap_or(1))
+                    }
+                    "VARCHAR" | "CHARACTER VARYING" => {
+                        SqlType::VarChar(args.get(0).copied())
+                    }
+                    "TEXT" => SqlType::Text,
+
+                    // Binary
+                    "BYTEA" => SqlType::ByteA,
+
+                    // Date/Time
+                    "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
+                        SqlType::Timestamp(args.get(0).copied())
+                    }
+                    "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
+                        SqlType::Timestamptz(args.get(0).copied())
+                    }
+                    "DATE" => SqlType::Date,
+                    "TIME" => SqlType::Time(args.get(0).copied()),
+                    _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
+                        fields: match ty.as_str() {
+                            "INTERVAL YEAR" => IntervalField::Year,
+                            "INTERVAL MONTH" => IntervalField::Month,
+                            "INTERVAL DAY" => IntervalField::Day,
+                            "INTERVAL HOUR" => IntervalField::Hour,
+                            "INTERVAL MINUTE" => IntervalField::Minute,
+                            "INTERVAL SECOND" => IntervalField::Second,
+                            "INTERVAL YEAR TO MONTH" => {
+                                IntervalField::YearToMonth
+                            }
+                            "INTERVAL DAY TO HOUR" => IntervalField::DayToHour,
+                            "INTERVAL DAY TO MINUTE" => {
+                                IntervalField::DayToMinute
+                            }
+                            "INTERVAL DAY TO SECOND" => {
+                                IntervalField::DayToSecond
+                            }
+                            "INTERVAL HOUR TO MINUTE" => {
+                                IntervalField::HourToMinute
+                            }
+                            "INTERVAL HOUR TO SECOND" => {
+                                IntervalField::HourToSecond
+                            }
+                            "INTERVAL MINUTE TO SECOND" => {
+                                IntervalField::MinuteToSecond
+                            }
+                            "INTERVAL" => IntervalField::None,
+                            _ => unreachable!(),
+                        },
+
+                        precision: args.get(0).copied(),
+                    },
+
+                    // Boolean
+                    "BOOLEAN" | "BOOL" => SqlType::Boolean,
+
+                    // Network
+                    "INET" => SqlType::Inet,
+                    "CIDR" => SqlType::Cidr,
+                    "MACADDR" => SqlType::MacAddr,
+
+                    // Semi-Structured
+                    "JSON" => SqlType::Json,
+                    "JSONB" => SqlType::Jsonb,
+                    "UUID" => SqlType::Uuid,
+
+                    // Serial
+                    "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
+                    "SERIAL" | "SERIAL4" => SqlType::Serial,
+                    "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
+
+                    _ => {
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::IsNot,
+                        )));
+                    }
+                };
+
+                let (input, pk) = opt(preceded(
+                    multispace1,
+                    many0(alt((
+                        tag_no_case("PRIMARY KEY"),
+                        tag_no_case("UNIQUE"),
+                        tag_no_case("NOT NULL"),
+                        recognize(many1(alt((multispace0, alphanumeric1)))),
+                    ))),
+                ))
+                .parse(input)?;
+
+                let mut is_primary_key = false;
+                let mut not_null = false;
+                let mut index = None;
+
+                pk.as_deref().unwrap_or(&[]).iter().for_each(|s| match *s {
+                    "PRIMARY KEY" => {
+                        not_null = true;
+                        is_primary_key = true;
+                        index = Some(SqlIndexColumn::default());
+                    }
+
+                    "UNIQUE" => index = Some(SqlIndexColumn::default()),
+
+                    "NOT NULL" => not_null = true,
+
+                    _ => {}
+                });
+
+                let ret = columns.insert(
+                    col_name.to_string(),
+                    SqlColumn { sql_type, index, not_null, is_primary_key },
+                );
+
+                if ret.is_some() {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        col_name,
+                        nom::error::ErrorKind::OneOf,
+                    )));
+                }
+
+                Ok((input, ()))
+            };
             let (input, _) = multispace1(input)?;
 
             let (input, _) = opt((
@@ -47,7 +233,7 @@ pub(crate) fn parse_statement(
             let (input, table_name) = parse_ident(input)?;
             let (input, _) = multispace0(input)?;
 
-            let (input, cols) = delimited(
+            let (input, _) = delimited(
                 tag("("),
                 separated_list1(
                     (multispace0, tag(","), multispace0),
@@ -59,7 +245,7 @@ pub(crate) fn parse_statement(
 
             Ok((
                 input,
-                Created::Table { name: table_name.to_string(), columns: cols },
+                Created::Table { name: table_name.to_string(), columns },
             ))
         }
 
@@ -120,7 +306,9 @@ pub(crate) fn parse_statement(
                 });
 
             if let Some(IndexMethod::Other) = index_method {
-                return Err(Error::InvalidMethod(idx_method.unwrap_or_default().into()));
+                return Err(Error::InvalidMethod(
+                    idx_method.unwrap_or_default().into(),
+                ));
             }
 
             let (input, _) = multispace1(input)?;
@@ -143,7 +331,6 @@ pub(crate) fn parse_statement(
                                 )),
                                 parse_ident,
                             )),
-
                             opt(preceded(multispace1, parse_ident)),
                             opt(preceded(
                                 multispace1,
@@ -182,14 +369,18 @@ pub(crate) fn parse_statement(
                         ),
                         |(name, opclass, sort1, sort2)| {
                             Ok::<
-                                SqlIndexColumn,
+                                (String, SqlIndexColumn),
                                 nom::Err<nom::error::Error<&str>>,
-                            >(SqlIndexColumn {
-                                name: name.to_string(),
-                                opclass: opclass.map(String::from),
-                                sort_order: sort1,
-                                null_order: sort2,
-                            })
+                            >((
+                                name.to_string(),
+                                SqlIndexColumn {
+                                    name: index_name.map(String::from),
+                                    opclass: opclass.map(String::from),
+                                    sort_order: sort1,
+                                    null_order: sort2,
+                                    method: index_method,
+                                },
+                            ))
                         },
                     ),
                 ),
@@ -217,7 +408,10 @@ pub(crate) fn parse_statement(
             .parse(input)?;
 
             if pairs.is_some() {
-                idx_method.ok_or(Error::UnexpectedToken(input.into(), "Index Method".into()))?;
+                idx_method.ok_or(Error::UnexpectedToken(
+                    input.into(),
+                    "Index Method".into(),
+                ))?;
             }
 
             for (key, value) in pairs.unwrap_or(vec![]) {
@@ -290,18 +484,14 @@ pub(crate) fn parse_statement(
                     _ => Err(()),
                 };
 
-                res.map_err(|_| {
-                    Error::InvalidParam(key.into())
-                })?;
+                res.map_err(|_| Error::InvalidParam(key.into()))?;
             }
 
-            // temporary return
             Ok((
                 input,
                 Created::Index {
                     name: index_name.map(String::from),
                     table_name: table_name.to_string(),
-                    method: index_method,
                     columns: cols,
                     concurrent,
                     is_unique,
@@ -309,164 +499,6 @@ pub(crate) fn parse_statement(
             ))
         }
     }
-}
-
-fn parse_col_def(input: &str) -> IResult<&str, SqlColumn> {
-    let (input, col_name) = parse_ident(input)?;
-    let (input, _) = multispace1(input)?;
-
-    let (input, sql_type) = alt((
-        tag_no_case("DOUBLE PRECISION"),
-        tag_no_case("TIMESTAMP WITH TIME ZONE"),
-        tag_no_case("CHARACTER VARYING"),
-        tag_no_case("INTERVAL YEAR"),
-        tag_no_case("INTERVAL MONTH"),
-        tag_no_case("INTERVAL DAY"),
-        tag_no_case("INTERVAL HOUR"),
-        tag_no_case("INTERVAL MINUTE"),
-        tag_no_case("INTERVAL SECOND"),
-        tag_no_case("INTERVAL YEAR TO MONTH"),
-        tag_no_case("INTERVAL DAY TO HOUR"),
-        tag_no_case("INTERVAL DAY TO MINUTE"),
-        tag_no_case("INTERVAL DAY TO SECOND"),
-        tag_no_case("INTERVAL HOUR TO MINUTE"),
-        tag_no_case("INTERVAL HOUR TO SECOND"),
-        tag_no_case("INTERVAL MINUTE TO SECOND"),
-        alphanumeric1,
-    ))
-    .parse(input)?;
-
-    let (input, args) = opt((
-        multispace0,
-        delimited(
-            tag("("),
-            separated_list1(
-                (multispace0, tag(","), multispace0),
-                map_res(digit1, |s: &str| s.parse::<usize>()),
-            ),
-            tag(")"),
-        ),
-    ))
-    .parse(input)?;
-
-    let (_, args) = args.unwrap_or(("", Vec::new()));
-
-    let ty = sql_type.to_uppercase();
-    let sql_type = match ty.as_str() {
-        // Numeric
-        "SMALLINT" | "INT2" => SqlType::SmallInt,
-        "INTEGER" | "INT" | "INT4" => SqlType::Integer,
-        "BIGINT" | "INT8" => SqlType::BigInt,
-        "REAL" | "FLOAT4" => SqlType::Real,
-        "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
-        "DECIMAL" => {
-            SqlType::Decimal(args.get(0).copied(), args.get(1).copied())
-        }
-        "NUMERIC" => {
-            SqlType::Numeric(args.get(0).copied(), args.get(1).copied())
-        }
-
-        // String/Text
-        "CHAR" | "CHARACTER" => {
-            SqlType::Char(args.get(0).copied().unwrap_or(1))
-        }
-        "VARCHAR" | "CHARACTER VARYING" => {
-            SqlType::VarChar(args.get(0).copied())
-        }
-        "TEXT" => SqlType::Text,
-
-        // Binary
-        "BYTEA" => SqlType::ByteA,
-
-        // Date/Time
-        "TIMESTAMP" => SqlType::Timestamp(args.get(0).copied()),
-        "TIMESTAMPTZ" => SqlType::Timestamptz(args.get(0).copied()),
-        "DATE" => SqlType::Date,
-        "TIME" => SqlType::Time(args.get(0).copied()),
-        _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
-            fields: match ty.as_str() {
-                "INTERVAL YEAR" => IntervalField::Year,
-                "INTERVAL MONTH" => IntervalField::Month,
-                "INTERVAL DAY" => IntervalField::Day,
-                "INTERVAL HOUR" => IntervalField::Hour,
-                "INTERVAL MINUTE" => IntervalField::Minute,
-                "INTERVAL SECOND" => IntervalField::Second,
-                "INTERVAL YEAR TO MONTH" => IntervalField::YearToMonth,
-                "INTERVAL DAY TO HOUR" => IntervalField::DayToHour,
-                "INTERVAL DAY TO MINUTE" => IntervalField::DayToMinute,
-                "INTERVAL DAY TO SECOND" => IntervalField::DayToSecond,
-                "INTERVAL HOUR TO MINUTE" => IntervalField::HourToMinute,
-                "INTERVAL HOUR TO SECOND" => IntervalField::HourToSecond,
-                "INTERVAL MINUTE TO SECOND" => IntervalField::MinuteToSecond,
-                "INTERVAL" => IntervalField::None,
-                _ => unreachable!(),
-            },
-
-            precision: args.get(0).copied(),
-        },
-
-        // Boolean
-        "BOOLEAN" | "BOOL" => SqlType::Boolean,
-
-        // Network
-        "INET" => SqlType::Inet,
-        "CIDR" => SqlType::Cidr,
-        "MACADDR" => SqlType::MacAddr,
-
-        // Semi-Structured
-        "JSON" => SqlType::Json,
-        "JSONB" => SqlType::Jsonb,
-        "UUID" => SqlType::Uuid,
-
-        // Serial
-        "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
-        "SERIAL" | "SERIAL4" => SqlType::Serial,
-        "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
-
-        _ => {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::IsNot,
-            )));
-        }
-    };
-
-    let (input, pk) = opt(preceded(
-        multispace1,
-        many0(alt((
-            tag_no_case("PRIMARY KEY"),
-            tag_no_case("UNIQUE"),
-            tag_no_case("NOT NULL"),
-            recognize(many1(alt((multispace0, alphanumeric1)))),
-        ))),
-    ))
-    .parse(input)?;
-
-    let mut is_indexed = false;
-    let mut not_null = false;
-
-    pk.as_deref().unwrap_or(&[]).iter().for_each(|s| match *s {
-        "PRIMARY KEY" => {
-            is_indexed = true;
-            not_null = true;
-        }
-
-        "UNIQUE" => is_indexed = true,
-
-        "NOT NULL" => not_null = true,
-
-        _ => {}
-    });
-
-    Ok((
-        input,
-        SqlColumn {
-            name: col_name.to_string(),
-            sql_type,
-            is_indexed,
-            not_null,
-        },
-    ))
 }
 
 fn parse_ident(input: &str) -> IResult<&str, &str> {
@@ -482,14 +514,13 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
 pub(crate) enum Created {
     Table {
         name: String,
-        columns: Vec<SqlColumn>,
+        columns: IndexMap<String, SqlColumn>,
     },
 
     Index {
         name: Option<String>,
         table_name: String,
-        method: Option<IndexMethod>,
-        columns: Vec<SqlIndexColumn>,
+        columns: Vec<(String, SqlIndexColumn)>,
         concurrent: bool,
         is_unique: bool,
     },

@@ -1,10 +1,13 @@
+#[derive(Default)]
 pub struct SqlIndexColumn {
-    pub name: String,
+    pub name: Option<String>,
     pub opclass: Option<String>,
     pub sort_order: Option<IndexSortOrder>,
     pub null_order: Option<IndexNullOrder>,
+    pub method: Option<IndexMethod>,
 }
 
+#[derive(Clone, Copy)]
 pub enum IndexMethod {
     BTree { fillfactor: Option<u8> },
 
@@ -96,6 +99,7 @@ impl IndexMethod {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum GistBufMode {
     On,
     Off,
@@ -115,10 +119,10 @@ pub enum IndexNullOrder {
 }
 
 pub struct SqlColumn {
-    pub name: String,
     pub sql_type: SqlType,
-    pub is_indexed: bool,
+    pub index: Option<SqlIndexColumn>,
     pub not_null: bool,
+    pub is_primary_key: bool,
 }
 
 pub enum SqlType {

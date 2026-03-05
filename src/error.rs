@@ -1,4 +1,7 @@
-use std::{num::{IntErrorKind, ParseIntError}, str::ParseBoolError};
+use std::{
+    num::{IntErrorKind, ParseIntError},
+    str::ParseBoolError,
+};
 
 #[derive(Debug)]
 pub enum Error {
@@ -9,6 +12,7 @@ pub enum Error {
     ParseFailure(String),
     InvalidMethod(String),
     InvalidParam(String),
+    DuplicateIdent(String),
 }
 
 impl std::error::Error for Error {}
@@ -29,8 +33,9 @@ impl std::fmt::Display for Error {
             }
             Self::UnexpectedEOF => f.write_str("Unexpected EOF"),
             Self::ParseFailure(s) => write!(f, "Failed to parse: {}", s),
-            Self::InvalidMethod(s) => write!(f, "Invalid Method: {}", s),
-            Self::InvalidParam(s) => write!(f, "Invalid Param: {}", s),
+            Self::InvalidMethod(s) => write!(f, "Invalid method: {}", s),
+            Self::InvalidParam(s) => write!(f, "Invalid parameter: {}", s),
+            Self::DuplicateIdent(s) => write!(f, "Duplicate identifier: {}", s),
         }
     }
 }
@@ -61,9 +66,7 @@ impl<'a> From<nom::Err<nom::error::Error<&'a str>>> for Error {
                         Error::UnexpectedToken(input, "<INDEX METHOD>".into())
                     }
 
-                    nom::error::ErrorKind::NoneOf => {
-                        Error::InvalidParam(input)
-                    }
+                    nom::error::ErrorKind::NoneOf => Error::InvalidParam(input),
 
                     nom::error::ErrorKind::AlphaNumeric
                     | nom::error::ErrorKind::Alpha => {
@@ -73,6 +76,8 @@ impl<'a> From<nom::Err<nom::error::Error<&'a str>>> for Error {
                     nom::error::ErrorKind::Digit => {
                         Error::UnexpectedToken(input, "<NUMBER>".into())
                     }
+
+                    nom::error::ErrorKind::OneOf => Error::DuplicateIdent(input),
 
                     _ => Error::ParseFailure(input),
                 }
