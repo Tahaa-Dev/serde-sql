@@ -1,6 +1,5 @@
 use crate::{
-    GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder, IntervalField,
-    SqlColumn, SqlIndexColumn, SqlType, SupportedDBs,
+    Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder, IntervalField, Result, SqlColumn, SqlIndexColumn, SqlType, SupportedDBs
 };
 
 use nom::{
@@ -16,7 +15,7 @@ use nom::{
 pub(crate) fn parse_statement(
     _db: SupportedDBs,
     input: &str,
-) -> IResult<&str, Created> {
+) -> Result<(&str, Created)> {
     let (input, _) = multispace0(input)?;
 
     let (input, _) = tag_no_case("CREATE")(input)?;
@@ -121,10 +120,7 @@ pub(crate) fn parse_statement(
                 });
 
             if let Some(IndexMethod::Other) = index_method {
-                return Err(nom::Err::Failure(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::IsNot,
-                )));
+                return Err(Error::InvalidMethod(idx_method.unwrap_or_default().into()));
             }
 
             let (input, _) = multispace1(input)?;
@@ -220,24 +216,14 @@ pub(crate) fn parse_statement(
             ))
             .parse(input)?;
 
-            let idx_method = if pairs.is_some() {
-                idx_method.ok_or(nom::Err::Failure(nom::error::Error::new(
-                    idx_method.unwrap_or(""),
-                    nom::error::ErrorKind::ManyTill,
-                )))?
-            } else {
-                ""
-            };
+            if pairs.is_some() {
+                idx_method.ok_or(Error::UnexpectedToken(input.into(), "Index Method".into()))?;
+            }
 
             for (key, value) in pairs.unwrap_or(vec![]) {
                 let res = match key.to_lowercase().as_str() {
                     "fillfactor" => {
-                        let v = value.parse().map_err(|_| {
-                            nom::Err::Failure(nom::error::Error::new(
-                                value,
-                                nom::error::ErrorKind::Count,
-                            ))
-                        })?;
+                        let v = value.parse()?;
 
                         let mut r = Ok(());
                         index_method.as_mut().map(|m| r = m.set_fillfactor(v));
@@ -245,12 +231,7 @@ pub(crate) fn parse_statement(
                     }
 
                     "fastupdate" => {
-                        let v = value.parse().map_err(|_| {
-                            nom::Err::Failure(nom::error::Error::new(
-                                value,
-                                nom::error::ErrorKind::Count,
-                            ))
-                        })?;
+                        let v = value.parse()?;
 
                         let mut r = Ok(());
                         index_method.as_mut().map(|m| r = m.set_fastupdate(v));
@@ -258,12 +239,7 @@ pub(crate) fn parse_statement(
                     }
 
                     "gin_pending_list_limit" => {
-                        let v = value.parse().map_err(|_| {
-                            nom::Err::Failure(nom::error::Error::new(
-                                value,
-                                nom::error::ErrorKind::Count,
-                            ))
-                        })?;
+                        let v = value.parse()?;
 
                         let mut r = Ok(());
                         index_method
@@ -278,12 +254,7 @@ pub(crate) fn parse_statement(
                             "OFF" | "FALSE" => GistBufMode::Off,
                             "AUTO" => GistBufMode::Auto,
                             _ => {
-                                return Err(nom::Err::Failure(
-                                    nom::error::Error::new(
-                                        value,
-                                        nom::error::ErrorKind::Count,
-                                    ),
-                                ));
+                                return Err(Error::ParseFailure(value.into()));
                             }
                         };
 
@@ -296,10 +267,7 @@ pub(crate) fn parse_statement(
                         let v = match value.to_uppercase().as_str() {
                             "ON" | "TRUE" => true,
                             "OFF" | "FALSE" => false,
-                            _ => return Err(nom::Err::Failure(nom::error::Error::new(
-                                value,
-                                nom::error::ErrorKind::Count,
-                            ))),
+                            _ => return Err(Error::ParseFailure(value.into())),
                         };
 
                         let mut r = Ok(());
@@ -310,12 +278,7 @@ pub(crate) fn parse_statement(
                     }
 
                     "pages_per_range" => {
-                        let v = value.parse().map_err(|_| {
-                            nom::Err::Failure(nom::error::Error::new(
-                                value,
-                                nom::error::ErrorKind::Count,
-                            ))
-                        })?;
+                        let v = value.parse()?;
 
                         let mut r = Ok(());
                         index_method
@@ -328,10 +291,7 @@ pub(crate) fn parse_statement(
                 };
 
                 res.map_err(|_| {
-                    nom::Err::Failure(nom::error::Error::new(
-                        idx_method,
-                        nom::error::ErrorKind::NoneOf,
-                    ))
+                    Error::InvalidParam(key.into())
                 })?;
             }
 

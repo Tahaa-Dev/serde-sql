@@ -7,6 +7,8 @@ pub enum Error {
     UnexpectedToken(String, String),
     UnexpectedEOF,
     ParseFailure(String),
+    InvalidMethod(String),
+    InvalidParam(String),
 }
 
 impl std::error::Error for Error {}
@@ -27,6 +29,8 @@ impl std::fmt::Display for Error {
             }
             Self::UnexpectedEOF => f.write_str("Unexpected EOF"),
             Self::ParseFailure(s) => write!(f, "Failed to parse: {}", s),
+            Self::InvalidMethod(s) => write!(f, "Invalid Method: {}", s),
+            Self::InvalidParam(s) => write!(f, "Invalid Param: {}", s),
         }
     }
 }
@@ -54,11 +58,11 @@ impl<'a> From<nom::Err<nom::error::Error<&'a str>>> for Error {
                     nom::error::ErrorKind::Count => Error::ParseFailure(input),
 
                     nom::error::ErrorKind::ManyTill => {
-                        Error::InvalidType(input)
+                        Error::UnexpectedToken(input, "<INDEX METHOD>".into())
                     }
 
                     nom::error::ErrorKind::NoneOf => {
-                        Error::InvalidType(input)
+                        Error::InvalidParam(input)
                     }
 
                     nom::error::ErrorKind::AlphaNumeric
@@ -88,7 +92,9 @@ impl From<ParseIntError> for Error {
 }
 
 impl From<ParseBoolError> for Error {
-    fn from(value: ParseBoolError) -> Self {
+    fn from(_: ParseBoolError) -> Self {
         Error::ParseFailure("Non bool".into())
     }
 }
+
+pub type Result<T> = std::result::Result<T, Error>;
