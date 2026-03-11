@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Run tests
+      run: cargo test --verbose
+    
+    - name: Run clippy lints
+      run: cargo clippy --all-targets -- -D warnings
+    
+    - name: Check formatting
+      if: github.event_name == 'pull_request'
+      run: cargo fmt -- --check
