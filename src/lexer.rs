@@ -178,15 +178,15 @@ pub(crate) fn parse_statement(
                     }
                 };
 
-                let (input, pk) = opt(preceded(
+                let (input, pk) = opt(many0(preceded(
                     multispace1,
-                    many0(alt((
+                    alt((
                         tag_no_case("PRIMARY KEY"),
                         tag_no_case("UNIQUE"),
                         tag_no_case("NOT NULL"),
-                        recognize(many0(alt((multispace0, alphanumeric1)))),
-                    ))),
-                ))
+                        is_not(","),
+                    )),
+                )))
                 .parse(input)?;
 
                 let mut is_primary_key = false;
@@ -291,7 +291,10 @@ pub(crate) fn parse_statement(
             ))
             .parse(input)?;
 
-            let (input, (index_name, table_name)): (&str, (Option<&str>, &str)) = alt((
+            let (input, (index_name, table_name)): (
+                &str,
+                (Option<&str>, &str),
+            ) = alt((
                 (
                     opt(terminated(parse_ident, multispace1)),
                     preceded((tag_no_case("ON"), multispace1), parse_ident),
@@ -544,4 +547,37 @@ pub(crate) enum Created<'a> {
     Table { name: String, columns: ColMap, primary_key: Option<String> },
 
     Index { table_name: &'a str, columns: Vec<(&'a str, SqlIndexColumn)> },
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{SupportedDBs, lexer::parse_statement};
+
+    #[test]
+    fn lexer_valid() {
+        let (s, _) = parse_statement(
+            SupportedDBs::PostgreSQL,
+            r#"CREATE table IF NOT EXISTS users (id UUID primary key)"#,
+        )
+        .unwrap();
+
+        let (s2, _) = parse_statement(
+            SupportedDBs::PostgreSQL,
+            r#"CREATE InDex IF NOT EXISTS user_id ON users USING BRIN (id)"#,
+        )
+        .unwrap();
+
+        assert!(s.is_empty());
+        assert!(s2.is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn lexer_invalid() {
+        let (_, _) = parse_statement(
+            SupportedDBs::PostgreSQL,
+            r#"CREATE INDEX should_fail ON users WITH"#,
+        )
+        .unwrap();
+    }
 }
