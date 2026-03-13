@@ -3,8 +3,13 @@ use serde_sql::{IndexMethod, SqlDB, SqlType, SupportedDBs, error::Error};
 #[test]
 fn test_valid() -> Result<(), Error> {
     let sql = r#"
-        CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT, email TEXT); -- A note
-        CREATE INDEX ON users USING hash (id);"#;
+        CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Primary key with default since it is unique
+            name TEXT,
+            email TEXT
+        );
+
+        CREATE INDEX ON users USING hash (id) WITH (fillfactor=90 /* need 90 fillfactor */);"#;
 
     let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql)?;
     let db = &db.tables.get("users").unwrap();

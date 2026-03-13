@@ -107,10 +107,20 @@ mod tests {
         -- Comment
 
         -- Another one
-        CREATE TABLE users (
+        /* A block comment */
+        CREATE TABLE IF NOT EXISTS users (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Some notes on id
-            name TEXT
-        ); -- One last comment"#;
+            name TEXT /* A multi-line
+                        comment */
+        ); -- One last comment for table
+
+        CREATE UNIQUE -- Needs to be unique
+        INDEX unique_id_index ON users /* Need an index for id */ USING btree (
+            id, /* Most important
+                  but also need to index name because it is sometimes accessed alone */
+            name
+        ); -- EOF
+        "#;
 
         let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql).unwrap();
 

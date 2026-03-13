@@ -29,7 +29,10 @@ pub(crate) fn parse_statement(
 
     let (input, output) = alt((
         tag_no_case("TABLE"),
-        recognize((opt(tag_no_case("UNIQUE")), tag_no_case("INDEX"))),
+        recognize((
+            opt((tag_no_case("UNIQUE"), parse_comment1)),
+            tag_no_case("INDEX"),
+        )),
     ))
     .parse(input)?;
 
@@ -282,7 +285,7 @@ pub(crate) fn parse_statement(
         }
 
         _ => {
-            let is_unique = output.contains("UNIQUE");
+            let is_unique = output.starts_with("UNIQUE");
 
             let (input, _) = parse_comment1(input)?;
 
@@ -352,7 +355,7 @@ pub(crate) fn parse_statement(
             let (input, _) = parse_comment1(input)?;
 
             let (input, cols) = delimited(
-                tag("("),
+                (tag("("), parse_comment0),
                 separated_list1(
                     (parse_comment0, tag(","), parse_comment0),
                     map_res(
@@ -424,14 +427,14 @@ pub(crate) fn parse_statement(
                         },
                     ),
                 ),
-                tag(")"),
+                (parse_comment0, tag(")")),
             )
             .parse(input)?;
 
             let (input, pairs) = opt(preceded(
                 (parse_comment1, tag_no_case("WITH"), parse_comment1),
                 delimited(
-                    tag("("),
+                    (tag("("), parse_comment0),
                     separated_list1(
                         (parse_comment0, tag(","), parse_comment0),
                         separated_pair(
@@ -440,7 +443,7 @@ pub(crate) fn parse_statement(
                             alphanumeric1,
                         ),
                     ),
-                    tag(")"),
+                    (parse_comment0, tag(")")),
                 ),
             ))
             .parse(input)?;
@@ -555,17 +558,24 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
 
 pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
     let (input, _) = multispace0(input)?;
-    let (input, _) =
-        opt((tag("--"), many0(none_of("\r\n")), multispace0)).parse(input)?;
+    let (input, _) = opt(alt((
+        (tag("--"), recognize(many0(none_of("\r\n"))), multispace0),
+        (tag("/*"), recognize((is_not("/*"), tag("*/"))), multispace0),
+    )))
+    .parse(input)?;
 
     Ok((input, ()))
 }
 
 pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
     let (input, _) = multispace1(input)?;
-    opt((tag("--"), many0(none_of("\r\n")), multispace1))
-        .parse(input)
-        .map(|(s, _)| (s, ()))
+    let (input, _) = opt(alt((
+        (tag("--"), recognize(many0(none_of("\r\n"))), multispace1),
+        (tag("/*"), recognize((is_not("/*"), tag("*/"))), multispace1),
+    )))
+    .parse(input)?;
+
+    Ok((input, ()))
 }
 
 pub(crate) enum Created<'a> {
@@ -584,7 +594,7 @@ mod tests {
             SupportedDBs::PostgreSQL,
             r#"CREATE table IF NOT EXISTS -- Make sure it's only created once
             users (
-                id UUID primary key, -- Primary key Notes
+                id UUID primary key, /* Primary key Notes */
                 name TEXT
             )"#,
         )
@@ -593,7 +603,11 @@ mod tests {
         let (s2, _) = parse_statement(
             SupportedDBs::PostgreSQL,
             r#"CREATE InDex -- Note
-            IF NOT EXISTS user_id ON users USING BRIN (id)"#,
+            IF NOT EXISTS user_id ON users USING BRIN (
+                id, /* Multi-line
+                    Note */
+                name
+            )"#,
         )
         .unwrap();
 
