@@ -51,44 +51,12 @@ impl<'a> Lexer<'a> {
                     let (input, col_name) = parse_ident(input)?;
                     let (input, _) = parse_comment1(input)?;
 
-                    let (input, sql_type) = alt((
-                        tag_no_case("DOUBLE PRECISION"),
-                        tag_no_case("TIMESTAMP WITH TIME ZONE"),
-                        tag_no_case("TIMESTAMP WITHOUT TIME ZONE"),
-                        tag_no_case("CHARACTER VARYING"),
-                        tag_no_case("INTERVAL YEAR"),
-                        tag_no_case("INTERVAL MONTH"),
-                        tag_no_case("INTERVAL DAY"),
-                        tag_no_case("INTERVAL HOUR"),
-                        tag_no_case("INTERVAL MINUTE"),
-                        tag_no_case("INTERVAL SECOND"),
-                        tag_no_case("INTERVAL YEAR TO MONTH"),
-                        tag_no_case("INTERVAL DAY TO HOUR"),
-                        tag_no_case("INTERVAL DAY TO MINUTE"),
-                        tag_no_case("INTERVAL DAY TO SECOND"),
-                        tag_no_case("INTERVAL HOUR TO MINUTE"),
-                        tag_no_case("INTERVAL HOUR TO SECOND"),
-                        tag_no_case("INTERVAL MINUTE TO SECOND"),
-                        alphanumeric1,
-                    ))
-                    .parse(input)?;
-
-                    let (input, args) = opt(preceded(
-                        parse_comment0,
-                        delimited(
-                            (tag("("), parse_comment0),
-                            separated_list1(
-                                (parse_comment0, tag(","), parse_comment0),
-                                map_res(digit1, |s: &str| s.parse::<usize>()),
-                            ),
-                            (parse_comment0, tag(")")),
-                        ),
-                    ))
-                    .parse(input)?;
+                    let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
 
                     let args = args.unwrap_or(Vec::new());
 
                     let ty = sql_type.to_uppercase();
+
                     let sql_type = match ty.as_str() {
                         // Numeric
                         "SMALLINT" | "INT2" => SqlType::SmallInt,
@@ -192,28 +160,11 @@ impl<'a> Lexer<'a> {
                         }
                     };
 
-                    let (input, pk) = opt(many0(preceded(
-                        parse_comment1,
-                        alt((
-                            tag_no_case("PRIMARY KEY"),
-                            tag_no_case("UNIQUE"),
-                            tag_no_case("NOT NULL"),
-                            recognize(many0(alt((
-                                alphanumeric1,
-                                multispace1,
-                                tag("_"),
-                                tag("()"),
-                                delimited(tag("("), is_not(")"), tag(")")),
-                                delimited(tag("'"), is_not("'"), tag("'")),
-                                delimited(tag("\""), is_not("\""), tag("\"")),
-                            )))),
-                        )),
-                    )))
-                    .parse(input)?;
-
                     let mut is_primary_key = false;
                     let mut not_null = false;
                     let mut index = None;
+
+                    let (input, pk) = Self::pg_parse_constraints(input)?;
 
                     for s in pk.unwrap_or(vec![]) {
                         match s.to_uppercase().as_str() {
@@ -575,6 +526,66 @@ impl<'a> Lexer<'a> {
         self.statements = input;
 
         Ok(out)
+    }
+
+    fn pg_parse_constraints(input: &str) -> IResult<&str, Option<Vec<&str>>> {
+        opt(many0(preceded(
+            parse_comment1,
+            alt((
+                tag_no_case("PRIMARY KEY"),
+                tag_no_case("UNIQUE"),
+                tag_no_case("NOT NULL"),
+                recognize(many0(alt((
+                    alphanumeric1,
+                    multispace1,
+                    tag("_"),
+                    tag("()"),
+                    delimited(tag("("), is_not(")"), tag(")")),
+                    delimited(tag("'"), is_not("'"), tag("'")),
+                    delimited(tag("\""), is_not("\""), tag("\"")),
+                )))),
+            )),
+        )))
+        .parse(input)
+    }
+
+    fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
+        let (input, sql_type) = alt((
+            tag_no_case("DOUBLE PRECISION"),
+            tag_no_case("TIMESTAMP WITH TIME ZONE"),
+            tag_no_case("TIMESTAMP WITHOUT TIME ZONE"),
+            tag_no_case("CHARACTER VARYING"),
+            tag_no_case("INTERVAL YEAR"),
+            tag_no_case("INTERVAL MONTH"),
+            tag_no_case("INTERVAL DAY"),
+            tag_no_case("INTERVAL HOUR"),
+            tag_no_case("INTERVAL MINUTE"),
+            tag_no_case("INTERVAL SECOND"),
+            tag_no_case("INTERVAL YEAR TO MONTH"),
+            tag_no_case("INTERVAL DAY TO HOUR"),
+            tag_no_case("INTERVAL DAY TO MINUTE"),
+            tag_no_case("INTERVAL DAY TO SECOND"),
+            tag_no_case("INTERVAL HOUR TO MINUTE"),
+            tag_no_case("INTERVAL HOUR TO SECOND"),
+            tag_no_case("INTERVAL MINUTE TO SECOND"),
+            alphanumeric1,
+        ))
+        .parse(input)?;
+
+        let (input, args) = opt(preceded(
+            parse_comment0,
+            delimited(
+                (tag("("), parse_comment0),
+                separated_list1(
+                    (parse_comment0, tag(","), parse_comment0),
+                    map_res(digit1, |s: &str| s.parse::<usize>()),
+                ),
+                (parse_comment0, tag(")")),
+            ),
+        ))
+        .parse(input)?;
+
+        Ok((input, (sql_type, args)))
     }
 }
 
