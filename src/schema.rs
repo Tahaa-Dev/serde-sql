@@ -60,7 +60,7 @@ impl SqlDB {
                     }
                 }
 
-                Created::Index { table_name, columns } => {
+                Created::Index { table_name, columns, included } => {
                     let table =
                         tables.get_mut(table_name).ok_or_else(|| {
                             Error::MissingIdent(
@@ -69,7 +69,20 @@ impl SqlDB {
                             )
                         })?;
 
-                    for (col_name, index) in columns {
+                    if let Some(ref included) = included {
+                        for column in included {
+                            if !table.columns.contains_key(column) {
+                                return Err(Error::MissingIdent(
+                                    column.clone(),
+                                    IdentType::Column,
+                                ));
+                            }
+                        }
+                    }
+
+                    for (col_name, mut index) in columns {
+                        index.included_cols = included.clone();
+
                         table
                             .columns
                             .get_mut(col_name)

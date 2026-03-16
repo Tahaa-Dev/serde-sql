@@ -7,6 +7,7 @@ pub struct SqlIndexColumn {
     pub method: Option<IndexMethod>,
     pub is_concurrent: bool,
     pub is_unique: bool,
+    pub included_cols: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug)]

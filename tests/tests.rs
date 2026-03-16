@@ -9,7 +9,7 @@ fn test_valid() -> Result<(), Error> {
             email TEXT
         );
 
-        CREATE INDEX ON users USING hash (id) WITH (fillfactor=90 /* need 90 fillfactor */);"#;
+        CREATE INDEX ON users USING hash (id) INCLUDE (email, name) WITH (fillfactor=90 /* need 90 fillfactor */);"#;
 
     let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql)?;
     let db = &db.tables.get("users").unwrap();

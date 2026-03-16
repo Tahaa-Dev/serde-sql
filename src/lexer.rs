@@ -1,4 +1,6 @@
-#![allow(clippy::manual_inspect)] // Cannot use inspect since it returns immutable references
+// Cannot use `.inspect()` since it returns immutable references
+// Have to use a manual `.inspect()` implementation that returns mutable references
+#![allow(clippy::manual_inspect)]
 
 use crate::{
     ColMap, Error, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
@@ -49,6 +51,7 @@ impl<'a> Lexer<'a> {
         let mut columns = ColMap::new();
         let mut primary_key = None;
 
+        // Has to be an inline closure for capturing primary_key and columns mutably
         let parse_col_def = |input| {
             let (input, col_name) = parse_ident(input)?;
             let (input, _) = parse_comment1(input)?;
@@ -259,13 +262,12 @@ impl<'a> Lexer<'a> {
                     (
                         alt((
                             recognize((
-                                alphanumeric1,
-                                parse_comment0,
-                                tag("("),
-                                parse_comment0,
-                                parse_ident,
-                                parse_comment0,
-                                tag(")"),
+                                many0(alt((alphanumeric1, tag("_")))),
+                                delimited(
+                                    (parse_comment0, tag("("), parse_comment0),
+                                    parse_ident,
+                                    (parse_comment0, tag("(")),
+                                ),
                             )),
                             parse_ident,
                         )),
@@ -316,6 +318,7 @@ impl<'a> Lexer<'a> {
                                 method: index_method,
                                 is_concurrent,
                                 is_unique,
+                                included_cols: None,
                             },
                         ))
                     },
@@ -324,9 +327,10 @@ impl<'a> Lexer<'a> {
             (parse_comment0, tag(")")),
         ))?;
 
+        let included = self.pg_parse_include()?;
         self.pg_apply_with_params(&mut index_method, idx_method)?;
 
-        Ok(Created::Index { table_name, columns: cols })
+        Ok(Created::Index { table_name, columns: cols, included })
     }
 
     fn pg_parse_index_method(
@@ -371,7 +375,7 @@ impl<'a> Lexer<'a> {
         idx_method: Option<&str>,
     ) -> Result<()> {
         let pairs = self.parser(opt(preceded(
-            (parse_comment0, tag_no_case("WITH"), parse_comment0),
+            (parse_comment1, tag_no_case("WITH"), parse_comment0),
             delimited(
                 (tag("("), parse_comment0),
                 separated_list1(
@@ -475,18 +479,22 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    pub(crate) fn parser<
-        T,
-        F: Parser<&'a str, Output = T, Error = nom::error::Error<&'a str>>,
-    >(
-        &mut self,
-        mut parser: F,
-    ) -> Result<T> {
-        let (input, out) = parser.parse(self.statements)?;
-
-        self.statements = input;
-
-        Ok(out)
+    fn pg_parse_include(&mut self) -> Result<Option<Vec<String>>> {
+        self.parser(opt(preceded(
+            (parse_comment1, tag_no_case("INCLUDE"), parse_comment0),
+            delimited(
+                (tag("("), parse_comment0),
+                separated_list1(
+                    (parse_comment0, tag(","), parse_comment0),
+                    map_res(parse_ident, |s: &'a str| {
+                        Ok::<String, nom::Err<nom::error::Error<&str>>>(
+                            s.to_string(),
+                        )
+                    }),
+                ),
+                (parse_comment0, tag(")")),
+            ),
+        )))
     }
 
     fn pg_parse_constraints(input: &str) -> IResult<&str, Option<Vec<&str>>> {
@@ -548,6 +556,20 @@ impl<'a> Lexer<'a> {
 
         Ok((input, (sql_type, args)))
     }
+
+    pub(crate) fn parser<
+        T,
+        F: Parser<&'a str, Output = T, Error = nom::error::Error<&'a str>>,
+    >(
+        &mut self,
+        mut parser: F,
+    ) -> Result<T> {
+        let (input, out) = parser.parse(self.statements)?;
+
+        self.statements = input;
+
+        Ok(out)
+    }
 }
 
 fn parse_ident(input: &str) -> IResult<&str, &str> {
@@ -562,6 +584,7 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
 
 pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
     let (input, _) = multispace0(input)?;
+
     let (input, _) = opt(alt((
         // many0(none_of("\r\n")) instead of is_not("\r\n") is because is_not fails if the pattern
         // is not found while many0(none_of) doesn't which is needed since the comment could be at
@@ -576,6 +599,7 @@ pub(crate) fn parse_comment0(input: &str) -> IResult<&str, ()> {
 
 pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
     let (input, _) = multispace1(input)?;
+
     let (input, _) = opt(alt((
         value((), (tag("--"), many0(none_of("\r\n")), multispace1)),
         value((), (tag("/*"), take_until("*/"), tag("*/"), multispace1)),
@@ -586,9 +610,17 @@ pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
 }
 
 pub(crate) enum Created<'a> {
-    Table { name: String, columns: ColMap, primary_key: Option<String> },
+    Table {
+        name: String,
+        columns: ColMap,
+        primary_key: Option<String>,
+    },
 
-    Index { table_name: &'a str, columns: Vec<(&'a str, SqlIndexColumn)> },
+    Index {
+        table_name: &'a str,
+        columns: Vec<(&'a str, SqlIndexColumn)>,
+        included: Option<Vec<String>>,
+    },
 }
 
 #[cfg(test)]
