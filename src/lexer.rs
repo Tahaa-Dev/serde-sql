@@ -26,9 +26,7 @@ pub(crate) struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
         self.parser(parse_comment0)?;
-
         self.parser(tag_no_case("CREATE"))?;
-
         self.parser(parse_comment1)?;
 
         let output = self.parser(alt((
@@ -42,476 +40,439 @@ impl<'a> Lexer<'a> {
         let output = output.to_uppercase();
 
         match output.as_str() {
-            "TABLE" => {
-                let mut columns = ColMap::new();
+            "TABLE" => self.pg_parse_table(),
+            _ => self.pg_parse_index(output.starts_with("UNIQUE")),
+        }
+    }
 
-                let mut primary_key = None;
+    fn pg_parse_table(&mut self) -> Result<Created<'_>> {
+        let mut columns = ColMap::new();
+        let mut primary_key = None;
 
-                let parse_col_def = |input| {
-                    let (input, col_name) = parse_ident(input)?;
-                    let (input, _) = parse_comment1(input)?;
+        let parse_col_def = |input| {
+            let (input, col_name) = parse_ident(input)?;
+            let (input, _) = parse_comment1(input)?;
 
-                    let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
+            let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
 
-                    let args = args.unwrap_or(Vec::new());
+            let args = args.unwrap_or(Vec::new());
+            let ty = sql_type.to_uppercase();
 
-                    let ty = sql_type.to_uppercase();
+            let sql_type = match ty.as_str() {
+                "SMALLINT" | "INT2" => SqlType::SmallInt,
+                "INTEGER" | "INT" | "INT4" => SqlType::Integer,
+                "BIGINT" | "INT8" => SqlType::BigInt,
+                "REAL" | "FLOAT4" => SqlType::Real,
+                "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
+                "DECIMAL" => SqlType::Decimal(
+                    args.first().copied(),
+                    args.get(1).copied(),
+                ),
+                "NUMERIC" => SqlType::Numeric(
+                    args.first().copied(),
+                    args.get(1).copied(),
+                ),
+                "CHAR" | "CHARACTER" => {
+                    SqlType::Char(args.first().copied().unwrap_or(1))
+                }
 
-                    let sql_type = match ty.as_str() {
-                        // Numeric
-                        "SMALLINT" | "INT2" => SqlType::SmallInt,
-                        "INTEGER" | "INT" | "INT4" => SqlType::Integer,
-                        "BIGINT" | "INT8" => SqlType::BigInt,
-                        "REAL" | "FLOAT4" => SqlType::Real,
-                        "DOUBLE PRECISION" | "FLOAT8" => {
-                            SqlType::DoublePrecision
+                "VARCHAR" | "CHARACTER VARYING" => {
+                    SqlType::VarChar(args.first().copied())
+                }
+
+                "TEXT" => SqlType::Text,
+                "BYTEA" => SqlType::ByteA,
+                "BOOLEAN" | "BOOL" => SqlType::Boolean,
+                "INET" => SqlType::Inet,
+                "CIDR" => SqlType::Cidr,
+                "MACADDR" => SqlType::MacAddr,
+                "JSON" => SqlType::Json,
+                "JSONB" => SqlType::Jsonb,
+                "UUID" => SqlType::Uuid,
+                "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
+                "SERIAL" | "SERIAL4" => SqlType::Serial,
+                "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
+                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
+                    SqlType::Timestamp(args.first().copied())
+                }
+
+                "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
+                    SqlType::Timestamptz(args.first().copied())
+                }
+
+                "DATE" => SqlType::Date,
+                "TIME" => SqlType::Time(args.first().copied()),
+
+                _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
+                    fields: match ty.as_str() {
+                        "INTERVAL YEAR" => IntervalField::Year,
+                        "INTERVAL MONTH" => IntervalField::Month,
+                        "INTERVAL DAY" => IntervalField::Day,
+                        "INTERVAL HOUR" => IntervalField::Hour,
+                        "INTERVAL MINUTE" => IntervalField::Minute,
+                        "INTERVAL SECOND" => IntervalField::Second,
+                        "INTERVAL YEAR TO MONTH" => IntervalField::YearToMonth,
+                        "INTERVAL DAY TO HOUR" => IntervalField::DayToHour,
+                        "INTERVAL DAY TO MINUTE" => IntervalField::DayToMinute,
+                        "INTERVAL DAY TO SECOND" => IntervalField::DayToSecond,
+                        "INTERVAL HOUR TO MINUTE" => {
+                            IntervalField::HourToMinute
                         }
-                        "DECIMAL" => SqlType::Decimal(
-                            args.first().copied(),
-                            args.get(1).copied(),
-                        ),
-                        "NUMERIC" => SqlType::Numeric(
-                            args.first().copied(),
-                            args.get(1).copied(),
-                        ),
-
-                        // String/Text
-                        "CHAR" | "CHARACTER" => {
-                            SqlType::Char(args.first().copied().unwrap_or(1))
+                        "INTERVAL HOUR TO SECOND" => {
+                            IntervalField::HourToSecond
                         }
-                        "VARCHAR" | "CHARACTER VARYING" => {
-                            SqlType::VarChar(args.first().copied())
+                        "INTERVAL MINUTE TO SECOND" => {
+                            IntervalField::MinuteToSecond
                         }
-                        "TEXT" => SqlType::Text,
+                        "INTERVAL" => IntervalField::None,
+                        _ => unreachable!(),
+                    },
+                    precision: args.first().copied(),
+                },
 
-                        // Binary
-                        "BYTEA" => SqlType::ByteA,
+                _ => {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::IsNot,
+                    )));
+                }
+            };
 
-                        // Boolean
-                        "BOOLEAN" | "BOOL" => SqlType::Boolean,
+            let mut is_primary_key = false;
+            let mut not_null = false;
+            let mut index = None;
 
-                        // Network
-                        "INET" => SqlType::Inet,
-                        "CIDR" => SqlType::Cidr,
-                        "MACADDR" => SqlType::MacAddr,
+            let (input, pk) = Self::pg_parse_constraints(input)?;
 
-                        // Semi-Structured
-                        "JSON" => SqlType::Json,
-                        "JSONB" => SqlType::Jsonb,
-                        "UUID" => SqlType::Uuid,
+            for s in pk.unwrap_or(vec![]) {
+                match s.to_uppercase().as_str() {
+                    "PRIMARY KEY" => {
+                        not_null = true;
+                        is_primary_key = true;
 
-                        // Serial
-                        "SMALLSERIAL" | "SERIAL2" => SqlType::SmallSerial,
-                        "SERIAL" | "SERIAL4" => SqlType::Serial,
-                        "BIGSERIAL" | "SERIAL8" => SqlType::BigSerial,
-
-                        // Date/Time
-                        "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" => {
-                            SqlType::Timestamp(args.first().copied())
-                        }
-                        "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => {
-                            SqlType::Timestamptz(args.first().copied())
-                        }
-                        "DATE" => SqlType::Date,
-                        "TIME" => SqlType::Time(args.first().copied()),
-                        _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
-                            fields: match ty.as_str() {
-                                "INTERVAL YEAR" => IntervalField::Year,
-                                "INTERVAL MONTH" => IntervalField::Month,
-                                "INTERVAL DAY" => IntervalField::Day,
-                                "INTERVAL HOUR" => IntervalField::Hour,
-                                "INTERVAL MINUTE" => IntervalField::Minute,
-                                "INTERVAL SECOND" => IntervalField::Second,
-                                "INTERVAL YEAR TO MONTH" => {
-                                    IntervalField::YearToMonth
-                                }
-                                "INTERVAL DAY TO HOUR" => {
-                                    IntervalField::DayToHour
-                                }
-                                "INTERVAL DAY TO MINUTE" => {
-                                    IntervalField::DayToMinute
-                                }
-                                "INTERVAL DAY TO SECOND" => {
-                                    IntervalField::DayToSecond
-                                }
-                                "INTERVAL HOUR TO MINUTE" => {
-                                    IntervalField::HourToMinute
-                                }
-                                "INTERVAL HOUR TO SECOND" => {
-                                    IntervalField::HourToSecond
-                                }
-                                "INTERVAL MINUTE TO SECOND" => {
-                                    IntervalField::MinuteToSecond
-                                }
-                                "INTERVAL" => IntervalField::None,
-                                _ => unreachable!(),
-                            },
-
-                            precision: args.first().copied(),
-                        },
-
-                        _ => {
+                        if primary_key.is_some() {
                             return Err(nom::Err::Failure(
                                 nom::error::Error::new(
-                                    input,
-                                    nom::error::ErrorKind::IsNot,
+                                    s,
+                                    nom::error::ErrorKind::OneOf,
                                 ),
                             ));
+                        } else {
+                            primary_key = Some(col_name.to_string());
                         }
-                    };
 
-                    let mut is_primary_key = false;
-                    let mut not_null = false;
-                    let mut index = None;
-
-                    let (input, pk) = Self::pg_parse_constraints(input)?;
-
-                    for s in pk.unwrap_or(vec![]) {
-                        match s.to_uppercase().as_str() {
-                            "PRIMARY KEY" => {
-                                not_null = true;
-                                is_primary_key = true;
-
-                                if primary_key.is_some() {
-                                    return Err(nom::Err::Failure(
-                                        nom::error::Error::new(
-                                            s,
-                                            nom::error::ErrorKind::OneOf,
-                                        ),
-                                    ));
-                                } else {
-                                    primary_key = Some(col_name.to_string());
-                                }
-
-                                index = Some(SqlIndexColumn::default());
-                            }
-
-                            "UNIQUE" => index = Some(SqlIndexColumn::default()),
-
-                            "NOT NULL" => not_null = true,
-
-                            _ => {}
-                        }
+                        index = Some(SqlIndexColumn::default());
                     }
 
-                    if !columns.contains_key(col_name) {
-                        columns.insert(
-                            col_name.to_string(),
-                            SqlColumn {
-                                sql_type,
-                                index,
-                                not_null,
-                                is_primary_key,
-                            },
-                        );
-                    } else {
-                        return Err(nom::Err::Failure(nom::error::Error::new(
-                            col_name,
-                            nom::error::ErrorKind::OneOf,
-                        )));
-                    }
-
-                    Ok((input, ()))
-                };
-
-                self.parser(parse_comment1)?;
-
-                self.parser(opt((
-                    tag_no_case("IF"),
-                    parse_comment1,
-                    tag_no_case("NOT"),
-                    parse_comment1,
-                    tag_no_case("EXISTS"),
-                    parse_comment1,
-                )))?;
-
-                let table_name = self.parser(parse_ident)?;
-                self.parser(parse_comment0)?;
-
-                self.parser(delimited(
-                    (tag("("), parse_comment0),
-                    separated_list1(
-                        (parse_comment0, tag(","), parse_comment0),
-                        parse_col_def,
-                    ),
-                    (parse_comment0, tag(")")),
-                ))?;
-
-                Ok(Created::Table {
-                    name: table_name.to_string(),
-                    columns,
-                    primary_key,
-                })
+                    "UNIQUE" => index = Some(SqlIndexColumn::default()),
+                    "NOT NULL" => not_null = true,
+                    _ => {}
+                }
             }
 
-            _ => {
-                let is_unique = output.starts_with("UNIQUE");
+            let opt = columns.insert(
+                col_name.to_string(),
+                SqlColumn { sql_type, index, not_null, is_primary_key },
+            );
 
-                self.parser(parse_comment1)?;
+            if opt.is_some() {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    col_name,
+                    nom::error::ErrorKind::OneOf,
+                )));
+            }
 
-                let concurrent = self.parser(opt(terminated(
-                    tag_no_case("CONCURRENTLY"),
-                    parse_comment1,
-                )))?;
+            Ok((input, ()))
+        };
 
-                let is_concurrent = concurrent.is_some();
+        self.parser(parse_comment1)?;
+        self.parser(opt((
+            tag_no_case("IF"),
+            parse_comment1,
+            tag_no_case("NOT"),
+            parse_comment1,
+            tag_no_case("EXISTS"),
+            parse_comment1,
+        )))?;
 
-                self.parser(opt((
-                    tag_no_case("IF"),
-                    parse_comment1,
-                    tag_no_case("NOT"),
-                    parse_comment1,
-                    tag_no_case("EXISTS"),
-                    parse_comment1,
-                )))?;
+        let table_name = self.parser(parse_ident)?;
+        self.parser(parse_comment0)?;
 
-                let (index_name, table_name): (Option<&str>, &str) = self
-                    .parser(alt((
-                        (
-                            opt(terminated(parse_ident, parse_comment1)),
-                            preceded(
-                                (tag_no_case("ON"), parse_comment1),
-                                parse_ident,
-                            ),
-                        ),
-                        (
-                            opt(recognize(not(is_not("")))),
-                            preceded(
-                                (tag_no_case("ON"), parse_comment1),
-                                parse_ident,
-                            ),
-                        ),
-                    )))?;
+        self.parser(delimited(
+            (tag("("), parse_comment0),
+            separated_list1(
+                (parse_comment0, tag(","), parse_comment0),
+                parse_col_def,
+            ),
+            (parse_comment0, tag(")")),
+        ))?;
 
-                self.parser(parse_comment1)?;
+        Ok(Created::Table {
+            name: table_name.to_string(),
+            columns,
+            primary_key,
+        })
+    }
 
-                let idx_method = self.parser(opt(preceded(
-                    (tag_no_case("USING"), parse_comment1),
-                    alphanumeric1,
-                )))?;
+    fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
+        self.parser(parse_comment1)?;
 
-                let mut index_method =
-                    idx_method.map(|s: &str| match s.to_uppercase().as_str() {
-                        "BTREE" => IndexMethod::BTree { fillfactor: None },
-                        "HASH" => IndexMethod::Hash { fillfactor: None },
-                        "GIN" => IndexMethod::Gin {
-                            fastupdate: None,
-                            gin_pending_list_limit: None,
-                        },
-                        "GIST" => IndexMethod::Gist {
-                            fillfactor: None,
-                            buffering: None,
-                        },
-                        "BRIN" => IndexMethod::Brin {
-                            pages_per_range: None,
-                            autosummarize: None,
-                        },
-                        "SPGIST" => IndexMethod::SpGist { fillfactor: None },
-                        _ => IndexMethod::Other,
-                    });
+        let is_concurrent = self
+            .parser(opt(terminated(
+                tag_no_case("CONCURRENTLY"),
+                parse_comment1,
+            )))?
+            .is_some();
 
-                if let Some(IndexMethod::Other) = index_method {
-                    return Err(Error::InvalidMethod(
-                        idx_method.unwrap_or_default().into(),
-                    ));
-                }
+        self.parser(opt((
+            tag_no_case("IF"),
+            parse_comment1,
+            tag_no_case("NOT"),
+            parse_comment1,
+            tag_no_case("EXISTS"),
+            parse_comment1,
+        )))?;
 
-                self.parser(parse_comment1)?;
+        let (index_name, table_name): (Option<&str>, &str) =
+            self.parser(alt((
+                (
+                    opt(terminated(parse_ident, parse_comment1)),
+                    preceded((tag_no_case("ON"), parse_comment1), parse_ident),
+                ),
+                (
+                    opt(recognize(not(is_not("")))),
+                    preceded((tag_no_case("ON"), parse_comment1), parse_ident),
+                ),
+            )))?;
 
-                let cols = self.parser(delimited(
-                    (tag("("), parse_comment0),
-                    separated_list1(
-                        (parse_comment0, tag(","), parse_comment0),
-                        map_res(
-                            (
-                                alt((
-                                    recognize((
-                                        alphanumeric1,
-                                        parse_comment0,
-                                        tag("("),
-                                        parse_comment0,
-                                        parse_ident,
-                                        parse_comment0,
-                                        tag(")"),
-                                    )),
-                                    parse_ident,
-                                )),
-                                opt(preceded(parse_comment1, parse_ident)),
-                                opt(preceded(
-                                    parse_comment1,
-                                    alt((
-                                        value(
-                                            IndexSortOrder::Asc,
-                                            tag_no_case("ASC"),
-                                        ),
-                                        value(
-                                            IndexSortOrder::Desc,
-                                            tag_no_case("DESC"),
-                                        ),
-                                    )),
-                                )),
-                                opt(preceded(
-                                    parse_comment1,
-                                    alt((
-                                        value(
-                                            IndexNullOrder::NullsFirst,
-                                            (
-                                                tag_no_case("NULLS"),
-                                                parse_comment1,
-                                                tag_no_case("FIRST"),
-                                            ),
-                                        ),
-                                        value(
-                                            IndexNullOrder::NullsLast,
-                                            (
-                                                tag_no_case("NULLS"),
-                                                parse_comment1,
-                                                tag_no_case("LAST"),
-                                            ),
-                                        ),
-                                    )),
-                                )),
-                            ),
-                            |(name, opclass, sort1, sort2)| {
-                                Ok::<
-                                    (&str, SqlIndexColumn),
-                                    nom::Err<nom::error::Error<&str>>,
-                                >((
-                                    name,
-                                    SqlIndexColumn {
-                                        name: index_name.map(String::from),
-                                        opclass: opclass.map(String::from),
-                                        sort_order: sort1,
-                                        null_order: sort2,
-                                        method: index_method,
-                                        is_concurrent,
-                                        is_unique,
-                                    },
-                                ))
-                            },
-                        ),
-                    ),
-                    (parse_comment0, tag(")")),
-                ))?;
+        self.parser(parse_comment1)?;
 
-                let pairs = self.parser(opt(preceded(
-                    (parse_comment1, tag_no_case("WITH"), parse_comment1),
-                    delimited(
-                        (tag("("), parse_comment0),
-                        separated_list1(
-                            (parse_comment0, tag(","), parse_comment0),
-                            separated_pair(
-                                parse_ident,
-                                (parse_comment0, tag("="), parse_comment0),
+        let (idx_method, mut index_method) = self.pg_parse_index_method()?;
+
+        self.parser(parse_comment1)?;
+
+        let cols = self.parser(delimited(
+            (tag("("), parse_comment0),
+            separated_list1(
+                (parse_comment0, tag(","), parse_comment0),
+                map_res(
+                    (
+                        alt((
+                            recognize((
                                 alphanumeric1,
-                            ),
-                        ),
-                        (parse_comment0, tag(")")),
+                                parse_comment0,
+                                tag("("),
+                                parse_comment0,
+                                parse_ident,
+                                parse_comment0,
+                                tag(")"),
+                            )),
+                            parse_ident,
+                        )),
+                        opt(preceded(parse_comment1, parse_ident)),
+                        opt(preceded(
+                            parse_comment1,
+                            alt((
+                                value(IndexSortOrder::Asc, tag_no_case("ASC")),
+                                value(
+                                    IndexSortOrder::Desc,
+                                    tag_no_case("DESC"),
+                                ),
+                            )),
+                        )),
+                        opt(preceded(
+                            parse_comment1,
+                            alt((
+                                value(
+                                    IndexNullOrder::NullsFirst,
+                                    (
+                                        tag_no_case("NULLS"),
+                                        parse_comment1,
+                                        tag_no_case("FIRST"),
+                                    ),
+                                ),
+                                value(
+                                    IndexNullOrder::NullsLast,
+                                    (
+                                        tag_no_case("NULLS"),
+                                        parse_comment1,
+                                        tag_no_case("LAST"),
+                                    ),
+                                ),
+                            )),
+                        )),
                     ),
-                )))?;
+                    |(name, opclass, sort1, sort2)| {
+                        Ok::<
+                            (&str, SqlIndexColumn),
+                            nom::Err<nom::error::Error<&str>>,
+                        >((
+                            name,
+                            SqlIndexColumn {
+                                name: index_name.map(String::from),
+                                opclass: opclass.map(String::from),
+                                sort_order: sort1,
+                                null_order: sort2,
+                                method: index_method,
+                                is_concurrent,
+                                is_unique,
+                            },
+                        ))
+                    },
+                ),
+            ),
+            (parse_comment0, tag(")")),
+        ))?;
 
-                if pairs.is_some() {
-                    idx_method.ok_or(Error::UnexpectedToken(
-                        self.statements.into(),
-                        "Index Method".into(),
-                    ))?;
+        self.pg_apply_with_params(&mut index_method, idx_method)?;
+
+        Ok(Created::Index { table_name, columns: cols })
+    }
+
+    fn pg_parse_index_method(
+        &mut self,
+    ) -> Result<(Option<&'a str>, Option<IndexMethod>)> {
+        let idx_method = self.parser(opt(preceded(
+            (tag_no_case("USING"), parse_comment1),
+            alphanumeric1,
+        )))?;
+
+        let index_method =
+            idx_method.map(|s: &str| match s.to_uppercase().as_str() {
+                "BTREE" => IndexMethod::BTree { fillfactor: None },
+                "HASH" => IndexMethod::Hash { fillfactor: None },
+                "GIN" => IndexMethod::Gin {
+                    fastupdate: None,
+                    gin_pending_list_limit: None,
+                },
+                "GIST" => {
+                    IndexMethod::Gist { fillfactor: None, buffering: None }
+                }
+                "BRIN" => IndexMethod::Brin {
+                    pages_per_range: None,
+                    autosummarize: None,
+                },
+                "SPGIST" => IndexMethod::SpGist { fillfactor: None },
+                _ => IndexMethod::Other,
+            });
+
+        if let Some(IndexMethod::Other) = index_method {
+            return Err(Error::InvalidMethod(
+                idx_method.unwrap_or_default().into(),
+            ));
+        }
+
+        Ok((idx_method, index_method))
+    }
+
+    fn pg_apply_with_params(
+        &mut self,
+        index_method: &mut Option<IndexMethod>,
+        idx_method: Option<&str>,
+    ) -> Result<()> {
+        let pairs = self.parser(opt(preceded(
+            (parse_comment0, tag_no_case("WITH"), parse_comment0),
+            delimited(
+                (tag("("), parse_comment0),
+                separated_list1(
+                    (parse_comment0, tag(","), parse_comment0),
+                    separated_pair(
+                        parse_ident,
+                        (parse_comment0, tag("="), parse_comment0),
+                        alphanumeric1,
+                    ),
+                ),
+                (parse_comment0, tag(")")),
+            ),
+        )))?;
+
+        if pairs.is_some() {
+            idx_method.ok_or(Error::UnexpectedToken(
+                self.statements.into(),
+                "Index Method".into(),
+            ))?;
+        }
+
+        for (key, value) in pairs.unwrap_or(vec![]) {
+            let res = match key.to_lowercase().as_str() {
+                "fillfactor" => {
+                    let v = value.parse()?;
+                    let mut r = Ok(());
+                    index_method.as_mut().map(|m| {
+                        r = m.set_fillfactor(v);
+                        m
+                    });
+                    r
                 }
 
-                for (key, value) in pairs.unwrap_or(vec![]) {
-                    let res = match key.to_lowercase().as_str() {
-                        "fillfactor" => {
-                            let v = value.parse()?;
+                "fastupdate" => {
+                    let v = value.parse()?;
+                    let mut r = Ok(());
+                    index_method.as_mut().map(|m| {
+                        r = m.set_fastupdate(v);
+                        m
+                    });
+                    r
+                }
 
-                            let mut r = Ok(());
-                            index_method.as_mut().map(|m| {
-                                r = m.set_fillfactor(v);
-                                m
-                            });
-                            r
-                        }
+                "gin_pending_list_limit" => {
+                    let v = value.parse()?;
+                    let mut r = Ok(());
+                    index_method.as_mut().map(|m| {
+                        r = m.set_gin_pending_list_limit(v);
+                        m
+                    });
+                    r
+                }
 
-                        "fastupdate" => {
-                            let v = value.parse()?;
-
-                            let mut r = Ok(());
-                            index_method.as_mut().map(|m| {
-                                r = m.set_fastupdate(v);
-                                m
-                            });
-                            r
-                        }
-
-                        "gin_pending_list_limit" => {
-                            let v = value.parse()?;
-
-                            let mut r = Ok(());
-                            index_method.as_mut().map(|m| {
-                                r = m.set_gin_pending_list_limit(v);
-                                m
-                            });
-                            r
-                        }
-
-                        "buffering" => {
-                            let v = match value.to_uppercase().as_str() {
-                                "ON" | "TRUE" => GistBufMode::On,
-                                "OFF" | "FALSE" => GistBufMode::Off,
-                                "AUTO" => GistBufMode::Auto,
-                                _ => {
-                                    return Err(Error::ParseFailure(
-                                        value.into(),
-                                    ));
-                                }
-                            };
-
-                            let mut r = Ok(());
-                            index_method.as_mut().map(|m| {
-                                r = m.set_buffering(v);
-                                m
-                            });
-                            r
-                        }
-
-                        "autosummarize" => {
-                            let v = match value.to_uppercase().as_str() {
-                                "ON" | "TRUE" => true,
-                                "OFF" | "FALSE" => false,
-                                _ => {
-                                    return Err(Error::ParseFailure(
-                                        value.into(),
-                                    ));
-                                }
-                            };
-
-                            let mut r = Ok(());
-                            index_method.as_mut().map(|m| {
-                                r = m.set_autosummarize(v);
-                                m
-                            });
-                            r
-                        }
-
-                        "pages_per_range" => {
-                            let v = value.parse()?;
-
-                            let mut r = Ok(());
-
-                            index_method.as_mut().map(|m| {
-                                r = m.set_pages_per_range(v);
-                                m
-                            });
-                            r
-                        }
-
-                        _ => Err(()),
+                "buffering" => {
+                    let v = match value.to_uppercase().as_str() {
+                        "ON" | "TRUE" => GistBufMode::On,
+                        "OFF" | "FALSE" => GistBufMode::Off,
+                        "AUTO" => GistBufMode::Auto,
+                        _ => return Err(Error::ParseFailure(value.into())),
                     };
 
-                    res.map_err(|_| Error::InvalidParam(key.into()))?;
+                    let mut r = Ok(());
+                    index_method.as_mut().map(|m| {
+                        r = m.set_buffering(v);
+                        m
+                    });
+                    r
                 }
 
-                Ok(Created::Index { table_name, columns: cols })
-            }
+                "autosummarize" => {
+                    let v = match value.to_uppercase().as_str() {
+                        "ON" | "TRUE" => true,
+                        "OFF" | "FALSE" => false,
+                        _ => return Err(Error::ParseFailure(value.into())),
+                    };
+
+                    let mut r = Ok(());
+                    index_method.as_mut().map(|m| {
+                        r = m.set_autosummarize(v);
+                        m
+                    });
+                    r
+                }
+
+                "pages_per_range" => {
+                    let v = value.parse()?;
+                    let mut r = Ok(());
+                    index_method.as_mut().map(|m| {
+                        r = m.set_pages_per_range(v);
+                        m
+                    });
+                    r
+                }
+
+                _ => Err(()),
+            };
+
+            res.map_err(|_| Error::InvalidParam(key.into()))?;
         }
+
+        Ok(())
     }
 
     pub(crate) fn parser<
