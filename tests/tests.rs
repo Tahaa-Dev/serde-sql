@@ -15,16 +15,15 @@ fn test_valid() {
     let db = SqlDB::from_sql(SupportedDBs::PostgreSQL, sql).unwrap();
     let db = &db.tables.get("users").unwrap();
 
-    assert_eq!(db.columns.get("id").unwrap().sql_type, SqlType::Uuid);
-    assert_eq!(db.columns.get("name").unwrap().sql_type, SqlType::Text);
-    assert_eq!(db.columns.get("email").unwrap().sql_type, SqlType::Text);
+    assert_eq!(db.columns["id"].sql_type, SqlType::Uuid);
+    assert_eq!(db.columns["name"].sql_type, SqlType::Text);
+    assert_eq!(db.columns["email"].sql_type, SqlType::Text);
     assert_eq!(
         db.columns.get("total_purchases").unwrap().sql_type,
         SqlType::Decimal(Some(10), Some(2))
     );
     assert!({
-        let idx =
-            &db.columns.get("id").as_ref().unwrap().index.as_ref().unwrap();
+        let idx = &db.columns["id"].index.as_ref().unwrap();
         if let Some(IndexMethod::Hash { fillfactor }) = &idx.method {
             fillfactor.is_none()
                 && idx.name.is_none()
@@ -33,5 +32,7 @@ fn test_valid() {
             false
         }
     });
-    assert_eq!(db.primary_key.as_ref().unwrap(), "id");
+
+    assert_eq!(db.primary_key.as_deref(), Some("id"));
+    assert_eq!(db.columns["id"].default.as_deref(), Some("gen_random_uuid()"))
 }

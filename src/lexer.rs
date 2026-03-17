@@ -144,11 +144,14 @@ impl<'a> Lexer<'a> {
             let mut is_primary_key = false;
             let mut not_null = false;
             let mut index = None;
+            let mut default = None;
 
             let (input, pk) = Self::pg_parse_constraints(input)?;
 
             for s in pk.unwrap_or(vec![]) {
-                match s.to_uppercase().as_str() {
+                let constraint = s.to_uppercase();
+
+                match constraint.as_str() {
                     "PRIMARY KEY" => {
                         not_null = true;
                         is_primary_key = true;
@@ -168,14 +171,28 @@ impl<'a> Lexer<'a> {
                     }
 
                     "UNIQUE" => index = Some(SqlIndexColumn::default()),
+
                     "NOT NULL" => not_null = true,
+
+                    _ if constraint.starts_with("DEFAULT") => {
+                        let (def, _) = (tag_no_case("DEFAULT"), parse_comment1)
+                            .parse(s)?;
+                        default = Some(def.to_string());
+                    }
+
                     _ => {}
                 }
             }
 
             let opt = columns.insert(
                 col_name.to_string(),
-                SqlColumn { sql_type, index, not_null, is_primary_key },
+                SqlColumn {
+                    sql_type,
+                    index,
+                    not_null,
+                    is_primary_key,
+                    default,
+                },
             );
 
             if opt.is_some() {

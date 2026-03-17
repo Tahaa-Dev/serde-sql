@@ -128,6 +128,7 @@ pub struct SqlColumn {
     pub index: Option<SqlIndexColumn>,
     pub not_null: bool,
     pub is_primary_key: bool,
+    pub default: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
