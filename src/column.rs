@@ -129,6 +129,7 @@ pub struct SqlColumn {
     pub not_null: bool,
     pub is_primary_key: bool,
     pub default: Option<String>,
+    pub check: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

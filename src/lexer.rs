@@ -145,6 +145,7 @@ impl<'a> Lexer<'a> {
             let mut not_null = false;
             let mut index = None;
             let mut default = None;
+            let mut check = None;
 
             let (input, pk) = Self::pg_parse_constraints(input)?;
 
@@ -180,6 +181,17 @@ impl<'a> Lexer<'a> {
                         default = Some(def.to_string());
                     }
 
+                    _ if constraint.starts_with("CHECK") => {
+                        let (c, _) =
+                            (tag_no_case("CHECK"), parse_comment0).parse(s)?;
+                        check = Some(
+                            c.get(1..c.len() - 1)
+                                .unwrap_or("")
+                                .trim()
+                                .to_string(),
+                        );
+                    }
+
                     _ => {}
                 }
             }
@@ -192,6 +204,7 @@ impl<'a> Lexer<'a> {
                     not_null,
                     is_primary_key,
                     default,
+                    check,
                 },
             );
 
@@ -280,6 +293,11 @@ impl<'a> Lexer<'a> {
                 tag_no_case("PRIMARY KEY"),
                 tag_no_case("UNIQUE"),
                 tag_no_case("NOT NULL"),
+                recognize((
+                    tag_no_case("CHECK"),
+                    parse_comment0,
+                    Self::pg_parse_check_expr,
+                )),
                 recognize(many0(alt((
                     alphanumeric1,
                     multispace1,
@@ -292,6 +310,55 @@ impl<'a> Lexer<'a> {
             )),
         )))
         .parse(input)
+    }
+
+    fn pg_parse_check_expr(input: &str) -> IResult<&str, &str> {
+        let mut depth: i32 = 0;
+        let mut chars = input.char_indices().peekable();
+        let mut in_single_quote = false;
+        let mut in_double_quote = false;
+        let mut escaped = false;
+
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' => escaped = !escaped,
+
+                '\'' if !in_double_quote => {
+                    if chars.peek().is_some_and(|(_, ch)| *ch != '\'')
+                        && !escaped
+                    {
+                        in_single_quote = !in_single_quote;
+                    }
+                }
+
+                '"' if !in_single_quote => {
+                    if chars.peek().is_some_and(|(_, ch)| *ch != '"')
+                        && !escaped
+                    {
+                        in_double_quote = !in_double_quote;
+                    }
+                }
+
+                '(' if !in_single_quote && !in_double_quote => {
+                    depth += 1;
+                }
+
+                ')' if !in_single_quote && !in_double_quote => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok((&input[i + 1..], &input[..i + 1]));
+                    }
+                }
+
+                _ => escaped = false,
+            }
+        }
+
+        // Reached EOF without finding closing paren
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeUntil,
+        )))
     }
 
     fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
@@ -712,7 +779,7 @@ mod tests {
     fn lexer_invalid() {
         let mut lexer = Lexer {
             db: SupportedDBs::PostgreSQL,
-            statements: r#"CREATE INDEX should_fail ON users WITH"#,
+            statements: r#"CREATE table should_fail ON users WITH"#,
         };
 
         lexer.parse_statement().unwrap();

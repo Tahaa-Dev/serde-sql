@@ -7,7 +7,7 @@ fn test_valid() {
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Primary key with default since it is unique
             name TEXT,
             email TEXT,
-            total_purchases DECIMAL(10, 2)
+            total_purchases DECIMAL(10, 2) CHECK (total_purchases > 0.00 AND (total_purchases < 9999999999.00))
         );
 
         CREATE INDEX ON users USING hash (id) INCLUDE (email, name) WITH (fillfactor=90 /* need 90 fillfactor */) WHERE total_purchases > 1000.00 ;"#;
@@ -34,5 +34,9 @@ fn test_valid() {
     });
 
     assert_eq!(db.primary_key.as_deref(), Some("id"));
-    assert_eq!(db.columns["id"].default.as_deref(), Some("gen_random_uuid()"))
+    assert_eq!(db.columns["id"].default.as_deref(), Some("gen_random_uuid()"));
+    assert_eq!(
+        db.columns["total_purchases"].check.as_deref(),
+        Some("total_purchases > 0.00 AND (total_purchases < 9999999999.00)")
+    );
 }
