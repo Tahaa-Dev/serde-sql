@@ -153,7 +153,9 @@ impl<'a> Lexer<'a> {
                 let constraint = s.to_uppercase();
 
                 match constraint.as_str() {
-                    "PRIMARY KEY" => {
+                    "UNIQUE" => index = Some(SqlIndexColumn::default()),
+
+                    _ if constraint.starts_with("PRIMARY") => {
                         not_null = true;
                         is_primary_key = true;
 
@@ -171,9 +173,7 @@ impl<'a> Lexer<'a> {
                         index = Some(SqlIndexColumn::default());
                     }
 
-                    "UNIQUE" => index = Some(SqlIndexColumn::default()),
-
-                    "NOT NULL" => not_null = true,
+                    _ if constraint.starts_with("NOT") => not_null = true,
 
                     _ if constraint.starts_with("DEFAULT") => {
                         let (def, _) = (tag_no_case("DEFAULT"), parse_comment1)
@@ -290,9 +290,17 @@ impl<'a> Lexer<'a> {
         opt(many0(preceded(
             parse_comment1,
             alt((
-                tag_no_case("PRIMARY KEY"),
+                recognize((
+                    tag_no_case("PRIMARY"),
+                    multispace1,
+                    tag_no_case("KEY"),
+                )),
                 tag_no_case("UNIQUE"),
-                tag_no_case("NOT NULL"),
+                recognize((
+                    tag_no_case("NOT"),
+                    multispace1,
+                    tag_no_case("NULL"),
+                )),
                 recognize((
                     tag_no_case("CHECK"),
                     parse_comment0,
@@ -313,7 +321,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn pg_parse_check_expr(input: &str) -> IResult<&str, &str> {
-        let mut depth: i32 = 0;
+        let mut depth = 0;
         let mut chars = input.char_indices().peekable();
         let mut in_single_quote = false;
         let mut in_double_quote = false;
