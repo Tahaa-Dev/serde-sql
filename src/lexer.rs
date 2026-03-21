@@ -850,7 +850,6 @@ pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
-#[derive(Debug)]
 pub(crate) enum Created<'a> {
     Table {
         name: String,
@@ -871,8 +870,8 @@ mod tests {
     use crate::{SupportedDBs, lexer::Lexer};
 
     #[test]
-    fn lexer_valid() {
-        let mut lexer1 = Lexer {
+    fn table_lexer_valid() {
+        let mut lexer = Lexer {
             db: SupportedDBs::PostgreSQL,
             statements: r#"CREATE table IF   NOT   EXISTS -- Make sure it's only created once
             users (
@@ -882,8 +881,13 @@ mod tests {
             )"#,
         };
 
-        lexer1.parse_statement().unwrap();
+        lexer.parse_statement().unwrap();
 
+        assert!(lexer.statements.is_empty());
+    }
+
+    #[test]
+    fn index_lexer_valid()  {
         let mut lexer2 = Lexer {
             db: SupportedDBs::PostgreSQL,
             statements: r#"CREATE InDex -- Note
@@ -896,24 +900,6 @@ mod tests {
 
         lexer2.parse_statement().unwrap();
 
-        assert!(lexer1.statements.is_empty());
         assert!(lexer2.statements.is_empty());
-    }
-
-    #[test]
-    fn lexer_invalid() {
-        let mut lexer = Lexer {
-            db: SupportedDBs::PostgreSQL,
-            statements: r#"CREATE table should_fail ON users WITH"#,
-        };
-
-        let res = lexer.parse_statement();
-        assert_eq!(
-            res.unwrap_err(),
-            crate::Error::UnexpectedToken(
-                "ON users WITH".into(),
-                "<KEYWORD>".into()
-            )
-        );
     }
 }

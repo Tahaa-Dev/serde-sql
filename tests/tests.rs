@@ -40,3 +40,19 @@ fn test_valid() {
         Some("total_purchases > 0.00 AND (total_purchases < 9999999999.00)")
     );
 }
+
+#[test]
+fn lexer_invalid() {
+    let res = SqlDB::from_sql(
+        SupportedDBs::PostgreSQL,
+        r#"CREATE table should_fail ON users WITH"#,
+    );
+
+    assert_eq!(
+        unsafe { res.unwrap_err_unchecked() },
+        serde_sql::error::Error::UnexpectedToken(
+            "ON users WITH".into(),
+            "<KEYWORD>".into()
+        )
+    );
+}

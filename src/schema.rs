@@ -10,9 +10,9 @@ use crate::{
 pub type ColMap = IndexMap<String, SqlColumn>;
 pub type TableMap = HashMap<String, SqlTable>;
 
-#[allow(dead_code)]
 pub struct SqlTable {
     pub columns: ColMap,
+    #[allow(dead_code)]
     pub primary_key: Option<String>,
 }
 
