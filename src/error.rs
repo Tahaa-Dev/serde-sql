@@ -3,7 +3,7 @@ use std::{
     str::ParseBoolError,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error {
     InvalidCommand(String),
     InvalidType(String),

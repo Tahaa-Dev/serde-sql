@@ -106,9 +106,11 @@ impl<'a> Lexer<'a> {
                 "DATE" => SqlType::Date,
                 "TIME" => SqlType::Time(args.first().copied()),
 
-                _ if &ty[0..7] == "INTERVAL" => SqlType::Interval {
-                    fields: match &ty.split_whitespace().collect::<Vec<&str>>()
-                        [..]
+                _ if ty.starts_with("INTERVAL") => SqlType::Interval {
+                    fields: match ty
+                        .split_whitespace()
+                        .collect::<Vec<&str>>()
+                        .as_slice()
                     {
                         ["INTERVAL", "YEAR"] => IntervalField::Year,
                         ["INTERVAL", "MONTH"] => IntervalField::Month,
@@ -291,9 +293,8 @@ impl<'a> Lexer<'a> {
                 tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("YEAR"),
-            )),
-            recognize((
-                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("TO"),
                 multispace1,
                 tag_no_case("MONTH"),
             )),
@@ -301,19 +302,53 @@ impl<'a> Lexer<'a> {
                 tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("DAY"),
-            )),
-            recognize((
-                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("TO"),
                 multispace1,
                 tag_no_case("HOUR"),
             )),
             recognize((
                 tag_no_case("INTERVAL"),
                 multispace1,
+                tag_no_case("DAY"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
                 tag_no_case("MINUTE"),
             )),
             recognize((
                 tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("DAY"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("SECOND"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("HOUR"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("MINUTE"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("HOUR"),
+                multispace1,
+                tag_no_case("TO"),
+                multispace1,
+                tag_no_case("SECOND"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
+                multispace1,
+                tag_no_case("MINUTE"),
+                multispace1,
+                tag_no_case("TO"),
                 multispace1,
                 tag_no_case("SECOND"),
             )),
@@ -321,8 +356,9 @@ impl<'a> Lexer<'a> {
                 tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("YEAR"),
-                multispace1,
-                tag_no_case("TO"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("MONTH"),
             )),
@@ -330,53 +366,19 @@ impl<'a> Lexer<'a> {
                 tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("DAY"),
-                multispace1,
-                tag_no_case("TO"),
-                multispace1,
-                tag_no_case("HOUR"),
-            )),
-            recognize((
-                tag_no_case("INTERVAL"),
-                multispace1,
-                tag_no_case("DAY"),
-                multispace1,
-                tag_no_case("TO"),
-                multispace1,
-                tag_no_case("MINUTE"),
-            )),
-            recognize((
-                tag_no_case("INTERVAL"),
-                multispace1,
-                tag_no_case("DAY"),
-                multispace1,
-                tag_no_case("TO"),
-                multispace1,
-                tag_no_case("SECOND"),
             )),
             recognize((
                 tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("HOUR"),
-                multispace1,
-                tag_no_case("TO"),
-                multispace1,
-                tag_no_case("MINUTE"),
-            )),
-            recognize((
-                tag_no_case("INTERVAL"),
-                multispace1,
-                tag_no_case("HOUR"),
-                multispace1,
-                tag_no_case("TO"),
-                multispace1,
-                tag_no_case("SECOND"),
             )),
             recognize((
                 tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("MINUTE"),
-                multispace1,
-                tag_no_case("TO"),
+            )),
+            recognize((
+                tag_no_case("INTERVAL"),
                 multispace1,
                 tag_no_case("SECOND"),
             )),
@@ -848,6 +850,7 @@ pub(crate) fn parse_comment1(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
+#[derive(Debug)]
 pub(crate) enum Created<'a> {
     Table {
         name: String,
@@ -871,10 +874,11 @@ mod tests {
     fn lexer_valid() {
         let mut lexer1 = Lexer {
             db: SupportedDBs::PostgreSQL,
-            statements: r#"CREATE table IF NOT EXISTS -- Make sure it's only created once
+            statements: r#"CREATE table IF   NOT   EXISTS -- Make sure it's only created once
             users (
-                id UUID primary key, /* Primary key Notes */
-                name TEXT
+                id UUID primary   key, /* Primary key Notes */
+                name TEXT,
+                time INTERVAL    DAY TO  SECOND 
             )"#,
         };
 
@@ -897,13 +901,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn lexer_invalid() {
         let mut lexer = Lexer {
             db: SupportedDBs::PostgreSQL,
             statements: r#"CREATE table should_fail ON users WITH"#,
         };
 
-        lexer.parse_statement().unwrap();
+        let res = lexer.parse_statement();
+        assert_eq!(
+            res.unwrap_err(),
+            crate::Error::UnexpectedToken(
+                "ON users WITH".into(),
+                "<KEYWORD>".into()
+            )
+        );
     }
 }
