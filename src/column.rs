@@ -178,6 +178,8 @@ pub enum SqlType {
     BigSerial,
 
     Unknown(String),
+
+    Array(Box<SqlType>, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

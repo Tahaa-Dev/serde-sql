@@ -136,6 +136,9 @@ impl<'a> Lexer<'a> {
                 let (input, _) = parse_comment1(input)?;
 
                 let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
+                let (input, arr) =
+                    opt(preceded(parse_comment0, many1(tag("[]"))))
+                        .parse(input)?;
 
                 let args = args.unwrap_or(Vec::new());
                 let ty = sql_type.to_uppercase();
@@ -220,6 +223,12 @@ impl<'a> Lexer<'a> {
                         _ => {}
                     }
                 }
+
+                let sql_type = if let Some(arr) = arr {
+                    SqlType::Array(Box::new(sql_type), arr.len())
+                } else {
+                    sql_type
+                };
 
                 let opt = columns.insert(
                     col_name.to_string(),

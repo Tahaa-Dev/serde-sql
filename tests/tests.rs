@@ -7,7 +7,8 @@ fn test_valid() {
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Primary key with default since it is unique
             name TEXT,
             email TEXT,
-            total_purchases DECIMAL(10, 2) CHECK (total_purchases > 0.00 AND (total_purchases < 9999999999.00))
+            total_purchases DECIMAL(10, 2) CHECK (total_purchases > 0.00 AND (total_purchases < 9999999999.00)),
+            login_times DATE[]
         );
         
         CREATE TABLE IF NOT EXISTS purchases (
@@ -29,10 +30,13 @@ fn test_valid() {
     assert_eq!(db.columns["id"].sql_type, SqlType::Uuid);
     assert_eq!(db.columns["name"].sql_type, SqlType::Text);
     assert_eq!(db.columns["email"].sql_type, SqlType::Text);
-
     assert_eq!(
         db.columns["total_purchases"].sql_type,
         SqlType::Decimal(Some(10), Some(2))
+    );
+    assert_eq!(
+        db.columns["login_times"].sql_type,
+        SqlType::Array(Box::new(SqlType::Date), 1)
     );
 
     assert!({
