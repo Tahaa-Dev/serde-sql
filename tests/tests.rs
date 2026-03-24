@@ -14,8 +14,10 @@ fn test_valid() {
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID REFERENCES users,
             user_email TEXT REFERENCES users(email),
+            username TEXT,
             name TEXT,
-            amount DECIMAL(4, 2) -- Most expensive item is $1299.99
+            amount DECIMAL(4, 2), -- Most expensive item is $1299.99
+            FOREIGN KEY (username) REFERENCES users(name)
         );
 
         CREATE INDEX ON users USING hash (id) INCLUDE (email, name) WITH (fillfactor=90 /* need 90 fillfactor */) WHERE total_purchases > 1000.00 ;"#;
@@ -60,6 +62,13 @@ fn test_valid() {
         Some(ForeignKey {
             table: "users".to_string(),
             column: Some("email".to_string())
+        })
+    );
+    assert_eq!(
+        db2.columns["username"].foreign_key,
+        Some(ForeignKey {
+            table: "users".to_string(),
+            column: Some("name".to_string())
         })
     );
 }
@@ -119,6 +128,23 @@ fn test_invalid_fk_missing_col() {
         SupportedDBs::PostgreSQL,
         r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
         CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY REFERENCES users(id));"#,
+    );
+
+    assert_eq!(
+        unsafe { res.unwrap_err_unchecked() },
+        serde_sql::error::Error::MissingIdent(
+            "id".to_string(),
+            serde_sql::error::IdentType::Column
+        )
+    )
+}
+
+#[test]
+fn test_invalid_table_fk_missing_col() {
+    let res = SqlDB::from_sql(
+        SupportedDBs::PostgreSQL,
+        r#"CREATE TABLE IF NOT EXISTS users (name TEXT);
+        CREATE TABLE IF NOT EXISTS purchases (user_id UUID PRIMARY KEY, FOREIGN KEY (user_id) REFERENCES users(id));"#,
     );
 
     assert_eq!(

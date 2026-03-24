@@ -15,7 +15,7 @@ use nom::{
     character::complete::{
         alphanumeric1, digit1, multispace0, multispace1, none_of,
     },
-    combinator::{map_res, not, opt, recognize, value},
+    combinator::{map_res, not, opt, peek, recognize, value},
     multi::{many0, many1, separated_list1},
     sequence::{delimited, preceded, separated_pair, terminated},
 };
@@ -72,115 +72,177 @@ impl<'a> Lexer<'a> {
 
         // Has to be an inline closure for capturing `primary_key` and `columns` mutably
         let parse_col_def = |input| {
-            let (input, col_name) = parse_ident(input)?;
-            let (input, _) = parse_comment1(input)?;
+            if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
+                "FOREIGN",
+            ))
+            .parse(input)
+            .is_ok()
+            {
+                let (input, _) = parse_comment0(input)?;
 
-            let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
+                let (input, _) = tag_no_case("FOREIGN")(input)?;
+                let (input, _) = parse_comment1(input)?;
+                let (input, _) = tag_no_case("KEY")(input)?;
+                let (input, _) = parse_comment0(input)?;
 
-            let args = args.unwrap_or(Vec::new());
-            let ty = sql_type.to_uppercase();
+                let (input, fk_cols) = delimited(
+                    (tag("("), parse_comment0),
+                    separated_list1(
+                        (parse_comment0, tag(","), parse_comment0),
+                        parse_ident,
+                    ),
+                    (parse_comment0, tag(")")),
+                )
+                .parse(input)?;
 
-            let sql_type = Self::match_type(ty, args.as_slice());
+                let (input, _) = parse_comment1(input)?;
+                let (input, _) = tag_no_case("REFERENCES")(input)?;
+                let (input, _) = parse_comment1(input)?;
 
-            let mut is_primary_key = false;
-            let mut not_null = false;
-            let mut index = None;
-            let mut default = None;
-            let mut check = None;
-            let mut foreign_key = None;
+                let (input, ref_table) = parse_ident(input)?;
+                let (input, _) = parse_comment0(input)?;
 
-            let (input, pk) = Self::pg_parse_constraints(input)?;
+                let (input, ref_cols) = opt(delimited(
+                    (tag("("), parse_comment0),
+                    separated_list1(
+                        (parse_comment0, tag(","), parse_comment0),
+                        parse_ident,
+                    ),
+                    (parse_comment0, tag(")")),
+                ))
+                .parse(input)?;
 
-            for s in pk.unwrap_or(vec![]) {
-                let constraint = s.to_uppercase();
+                for (i, fk_col) in fk_cols.iter().enumerate() {
+                    let ref_col =
+                        ref_cols.as_ref().and_then(|cols| cols.get(i).copied());
+                    fks.push((ref_table, ref_col));
 
-                match constraint.as_str() {
-                    "UNIQUE" => index = Some(SqlIndexColumn::default()),
+                    if let Some(col) = columns.get_mut(*fk_col) {
+                        col.foreign_key = Some(ForeignKey {
+                            table: ref_table.to_string(),
+                            column: ref_col.map(String::from),
+                        });
+                    } else {
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            *fk_col,
+                            nom::error::ErrorKind::IsNot,
+                        )));
+                    }
+                }
 
-                    _ if constraint.starts_with("PRIMARY") => {
-                        not_null = true;
-                        is_primary_key = true;
+                Ok((input, ()))
+            } else {
+                let (input, col_name) = parse_ident(input)?;
+                let (input, _) = parse_comment1(input)?;
 
-                        if primary_key.is_some() {
-                            return Err(nom::Err::Failure(
-                                nom::error::Error::new(
-                                    s,
-                                    nom::error::ErrorKind::OneOf,
-                                ),
-                            ));
-                        } else {
-                            primary_key = Some(col_name.to_string());
+                let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
+
+                let args = args.unwrap_or(Vec::new());
+                let ty = sql_type.to_uppercase();
+
+                let sql_type = Self::match_type(ty, args.as_slice());
+
+                let mut is_primary_key = false;
+                let mut not_null = false;
+                let mut index = None;
+                let mut default = None;
+                let mut check = None;
+                let mut foreign_key = None;
+
+                let (input, pk) = Self::pg_parse_constraints(input)?;
+
+                for s in pk.unwrap_or(vec![]) {
+                    let constraint = s.to_uppercase();
+
+                    match constraint.as_str() {
+                        "UNIQUE" => index = Some(SqlIndexColumn::default()),
+
+                        _ if constraint.starts_with("PRIMARY") => {
+                            not_null = true;
+                            is_primary_key = true;
+
+                            if primary_key.is_some() {
+                                return Err(nom::Err::Failure(
+                                    nom::error::Error::new(
+                                        s,
+                                        nom::error::ErrorKind::OneOf,
+                                    ),
+                                ));
+                            } else {
+                                primary_key = Some(col_name.to_string());
+                            }
+
+                            index = Some(SqlIndexColumn::default());
                         }
 
-                        index = Some(SqlIndexColumn::default());
-                    }
+                        _ if constraint.starts_with("NOT") => not_null = true,
 
-                    _ if constraint.starts_with("NOT") => not_null = true,
+                        _ if constraint.starts_with("DEFAULT") => {
+                            let (def, _) =
+                                (tag_no_case("DEFAULT"), parse_comment1)
+                                    .parse(s)?;
+                            default = Some(def.to_string());
+                        }
 
-                    _ if constraint.starts_with("DEFAULT") => {
-                        let (def, _) = (tag_no_case("DEFAULT"), parse_comment1)
-                            .parse(s)?;
-                        default = Some(def.to_string());
-                    }
-
-                    _ if constraint.starts_with("CHECK") => {
-                        let (c, _) =
-                            (tag_no_case("CHECK"), parse_comment0).parse(s)?;
-                        check = Some(
-                            c.get(1..c.len() - 1)
-                                .unwrap_or("")
-                                .trim()
-                                .to_string(),
-                        );
-                    }
-
-                    _ if constraint.starts_with("REFERENCES") => {
-                        let (fk, _) =
-                            (tag_no_case("REFERENCES"), parse_comment0)
+                        _ if constraint.starts_with("CHECK") => {
+                            let (c, _) = (tag_no_case("CHECK"), parse_comment0)
                                 .parse(s)?;
+                            check = Some(
+                                c.get(1..c.len() - 1)
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string(),
+                            );
+                        }
 
-                        let (left, table) = parse_ident(fk)?;
-                        let (left, _) = parse_comment0(left)?;
+                        _ if constraint.starts_with("REFERENCES") => {
+                            let (fk, _) =
+                                (tag_no_case("REFERENCES"), parse_comment0)
+                                    .parse(s)?;
 
-                        let (_, column) = opt(delimited(
-                            (tag("("), parse_comment0),
-                            parse_ident,
-                            (parse_comment0, tag(")")),
-                        ))
-                        .parse(left)?;
+                            let (left, table) = parse_ident(fk)?;
+                            let (left, _) = parse_comment0(left)?;
 
-                        fks.push((table, column));
-                        foreign_key = Some(ForeignKey {
-                            table: table.to_string(),
-                            column: column.map(String::from),
-                        });
+                            let (_, column) = opt(delimited(
+                                (tag("("), parse_comment0),
+                                parse_ident,
+                                (parse_comment0, tag(")")),
+                            ))
+                            .parse(left)?;
+
+                            fks.push((table, column));
+                            foreign_key = Some(ForeignKey {
+                                table: table.to_string(),
+                                column: column.map(String::from),
+                            });
+                        }
+
+                        _ => {}
                     }
-
-                    _ => {}
                 }
+
+                let opt = columns.insert(
+                    col_name.to_string(),
+                    SqlColumn {
+                        sql_type,
+                        index,
+                        not_null,
+                        is_primary_key,
+                        default,
+                        check,
+                        foreign_key,
+                    },
+                );
+
+                if opt.is_some() {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        col_name,
+                        nom::error::ErrorKind::OneOf,
+                    )));
+                }
+
+                Ok((input, ()))
             }
-
-            let opt = columns.insert(
-                col_name.to_string(),
-                SqlColumn {
-                    sql_type,
-                    index,
-                    not_null,
-                    is_primary_key,
-                    default,
-                    check,
-                    foreign_key,
-                },
-            );
-
-            if opt.is_some() {
-                return Err(nom::Err::Failure(nom::error::Error::new(
-                    col_name,
-                    nom::error::ErrorKind::OneOf,
-                )));
-            }
-
-            Ok((input, ()))
         };
 
         self.parser(delimited(
@@ -351,14 +413,12 @@ impl<'a> Lexer<'a> {
             "BIGINT" | "INT8" => SqlType::BigInt,
             "REAL" | "FLOAT4" => SqlType::Real,
             "DOUBLE PRECISION" | "FLOAT8" => SqlType::DoublePrecision,
-            "DECIMAL" => SqlType::Decimal(
-                args.first().copied(),
-                args.get(1).copied(),
-            ),
-            "NUMERIC" => SqlType::Numeric(
-                args.first().copied(),
-                args.get(1).copied(),
-            ),
+            "DECIMAL" => {
+                SqlType::Decimal(args.first().copied(), args.get(1).copied())
+            }
+            "NUMERIC" => {
+                SqlType::Numeric(args.first().copied(), args.get(1).copied())
+            }
             "CHAR" | "CHARACTER" => {
                 SqlType::Char(args.first().copied().unwrap_or(1))
             }
