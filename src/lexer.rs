@@ -54,7 +54,7 @@ impl<'a> Lexer<'a> {
 
     fn pg_parse_table(&mut self) -> Result<Created<'_>> {
         let mut columns = ColMap::new();
-        let mut primary_key = None;
+        let mut primary_key: Option<String> = None;
         let mut fks = vec![];
 
         self.parser(parse_comment1)?;
@@ -118,42 +118,24 @@ impl<'a> Lexer<'a> {
                 let (input, action) =
                     opt(preceded(parse_comment0, Self::pg_parse_fkaction))
                         .parse(input)?;
-
-                if let Some(action) = action {
-                    alt((
-                        |s| {
-                            let (_, action) =
-                                Self::pg_match_fkaction("DELETE").parse(s)?;
-                            on_delete = Some(action);
-
-                            Ok(("", ()))
-                        },
-                        |s| {
-                            let (_, action) =
-                                Self::pg_match_fkaction("UPDATE").parse(s)?;
-                            on_update = Some(action);
-
-                            Ok(("", ()))
-                        },
-                    ))
-                    .parse(action)?;
+                if let Some(action) = action
+                    && let Constraint::FkAction { event, action } = action
+                {
+                    match event {
+                        OnEvent::Delete => on_delete = Some(action),
+                        OnEvent::Update => on_update = Some(action),
+                    }
                 }
 
                 let (input, action) =
                     opt(preceded(parse_comment0, Self::pg_parse_fkaction))
                         .parse(input)?;
-
-                if let Some(action) = action {
-                    if on_delete.is_none() {
-                        let (_, action) =
-                            Self::pg_match_fkaction("DELETE").parse(action)?;
-
-                        on_delete = Some(action);
-                    } else if on_update.is_none() {
-                        let (_, action) =
-                            Self::pg_match_fkaction("UPDATE").parse(action)?;
-
-                        on_update = Some(action);
+                if let Some(action) = action
+                    && let Constraint::FkAction { event, action } = action
+                {
+                    match event {
+                        OnEvent::Delete => on_delete = Some(action),
+                        OnEvent::Update => on_update = Some(action),
                     }
                 }
 
@@ -197,109 +179,73 @@ impl<'a> Lexer<'a> {
                 let mut index = None;
                 let mut default = None;
                 let mut check = None;
-                let mut foreign_key = None;
-                let mut on_delete = None;
-                let mut on_update = None;
+                let mut foreign_key: Option<ForeignKey> = None;
 
                 let (input, pk) = Self::pg_parse_constraints(input)?;
 
                 for s in pk {
-                    let constraint = s.to_uppercase();
-
-                    match constraint.as_str() {
-                        "UNIQUE" => index = Some(SqlIndexColumn::default()),
-
-                        _ if constraint.starts_with("PRIMARY") => {
-                            not_null = true;
-                            is_primary_key = true;
-
+                    match s {
+                        Constraint::PrimaryKey => {
                             if primary_key.is_some() {
                                 return Err(nom::Err::Failure(
                                     nom::error::Error::new(
-                                        s,
-                                        nom::error::ErrorKind::OneOf,
+                                        input,
+                                        nom::error::ErrorKind::IsNot,
                                     ),
                                 ));
                             } else {
+                                is_primary_key = true;
+                                not_null = true;
+                                index = Some(SqlIndexColumn::default());
                                 primary_key = Some(col_name.to_string());
                             }
+                        }
 
+                        Constraint::Unique => {
                             index = Some(SqlIndexColumn::default());
                         }
+                        Constraint::NotNull => not_null = true,
 
-                        _ if constraint.starts_with("NOT") => not_null = true,
-
-                        _ if constraint.starts_with("DEFAULT") => {
-                            let (def, _) =
-                                (tag_no_case("DEFAULT"), parse_comment1)
-                                    .parse(s)?;
-                            default = Some(def.to_string());
+                        Constraint::Def(expr) => {
+                            default = Some(expr.to_string());
+                        }
+                        Constraint::Check(expr) => {
+                            check = Some(expr[1..expr.len() - 1].to_string());
+                        }
+                        Constraint::FkAction { event, action } => {
+                            if let Some(ref mut foreign_key) = foreign_key {
+                                match event {
+                                    OnEvent::Delete
+                                        if foreign_key.on_delete.is_none() =>
+                                    {
+                                        foreign_key.on_delete = Some(action);
+                                    }
+                                    OnEvent::Update
+                                        if foreign_key.on_update.is_none() =>
+                                    {
+                                        foreign_key.on_update = Some(action);
+                                    }
+                                    _ => {
+                                        return Err(nom::Err::Failure(
+                                            nom::error::Error::new(
+                                                "ON EVENT",
+                                                nom::error::ErrorKind::IsNot,
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
                         }
 
-                        _ if constraint.starts_with("CHECK") => {
-                            let (c, _) = (tag_no_case("CHECK"), parse_comment0)
-                                .parse(s)?;
-                            check = Some(
-                                c.get(1..c.len() - 1)
-                                    .unwrap_or("")
-                                    .trim()
-                                    .to_string(),
-                            );
-                        }
-
-                        _ if constraint.starts_with("REFERENCES") => {
-                            let (fk, _) =
-                                (tag_no_case("REFERENCES"), parse_comment1)
-                                    .parse(s)?;
-
-                            let (left, table) = parse_ident(fk)?;
-                            let (left, _) = parse_comment0(left)?;
-
-                            let (_, column) = opt(delimited(
-                                (tag("("), parse_comment0),
-                                parse_ident,
-                                (parse_comment0, tag(")")),
-                            ))
-                            .parse(left)?;
-
-                            fks.push((table, column));
+                        Constraint::ForeignKey { table, col } => {
+                            fks.push((table, col));
                             foreign_key = Some(ForeignKey {
                                 table: table.to_string(),
-                                column: column.map(String::from),
+                                column: col.map(String::from),
                                 on_delete: None,
                                 on_update: None,
                             });
                         }
-
-                        _ if constraint.starts_with("ON") => {
-                            alt((
-                                |s| {
-                                    let (s, action) =
-                                        Self::pg_match_fkaction("DELETE")
-                                            .parse(s)?;
-                                    on_delete = Some(action);
-
-                                    Ok((s, ()))
-                                },
-                                |s| {
-                                    let (s, action) =
-                                        Self::pg_match_fkaction("UPDATE")
-                                            .parse(s)?;
-                                    on_update = Some(action);
-
-                                    Ok((s, ()))
-                                },
-                            ))
-                            .parse(s)?;
-
-                            foreign_key = foreign_key.map(|mut fk| {
-                                fk.on_delete = on_delete;
-                                fk.on_update = on_update;
-                                fk
-                            });
-                        }
-
-                        _ => {}
                     }
                 }
 
@@ -351,75 +297,46 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn pg_match_fkaction(
-        event: &str,
-    ) -> impl nom::Parser<
-        &'a str,
-        Output = FkAction,
-        Error = nom::error::Error<&'a str>,
-    > {
-        preceded(
-            (
-                tag_no_case("ON"),
-                parse_comment1,
-                tag_no_case(event),
-                parse_comment1,
-            ),
-            |s| {
-                let (s, action) = alt((
-                    value(
-                        FkAction::NoAction,
-                        (tag_no_case("NO"), multispace1, tag_no_case("ACTION")),
-                    ),
-                    value(FkAction::Restrict, tag_no_case("RESTRICT")),
-                    value(FkAction::Cascade, tag_no_case("CASCADE")),
-                    value(
-                        FkAction::SetNull,
-                        (tag_no_case("SET"), multispace1, tag_no_case("NULL")),
-                    ),
-                    value(
-                        FkAction::SetDefault,
-                        (
-                            tag_no_case("SET"),
-                            multispace1,
-                            tag_no_case("DEFAULT"),
-                        ),
-                    ),
-                ))
-                .parse(s)?;
-
-                Ok((s, action))
-            },
-        )
-    }
-
-    fn pg_parse_fkaction(input: &str) -> IResult<&str, &str> {
-        recognize((
-            tag_no_case("ON"),
-            parse_comment1,
-            alt((tag_no_case("DELETE"), tag_no_case("UPDATE"))),
-            parse_comment1,
-            alt((
-                tag_no_case("RESTRICT"),
-                tag_no_case("CASCADE"),
+    fn pg_parse_fkaction(input: &str) -> IResult<&str, Constraint<'a>> {
+        let (input, _) = tag_no_case("ON")(input)?;
+        let (input, _) = parse_comment1(input)?;
+        let (input, event) = alt((
+            value(OnEvent::Delete, tag_no_case("DELETE")),
+            value(OnEvent::Update, tag_no_case("UPDATE")),
+        ))
+        .parse(input)?;
+        let (input, _) = parse_comment1(input)?;
+        let (input, action) = alt((
+            value(FkAction::Restrict, tag_no_case("RESTRICT")),
+            value(FkAction::Cascade, tag_no_case("CASCADE")),
+            value(
+                FkAction::NoAction,
                 recognize((
                     tag_no_case("NO"),
                     multispace1,
                     tag_no_case("ACTION"),
                 )),
+            ),
+            value(
+                FkAction::SetNull,
                 recognize((
                     tag_no_case("SET"),
                     multispace1,
                     tag_no_case("NULL"),
                 )),
+            ),
+            value(
+                FkAction::SetDefault,
                 recognize((
                     tag_no_case("SET"),
                     multispace1,
                     tag_no_case("DEFAULT"),
                 )),
-            )),
+            ),
         ))
-        .parse(input)
+        .parse(input)?;
+
+        Ok((input, Constraint::FkAction { event, action }))
     }
 
     fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
@@ -652,31 +569,28 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn pg_parse_constraints(input: &str) -> IResult<&str, Vec<&str>> {
+    fn pg_parse_constraints(
+        input: &'a str,
+    ) -> IResult<&'a str, Vec<Constraint<'a>>> {
         many0(preceded(
             parse_comment1,
             alt((
-                recognize((
-                    tag_no_case("PRIMARY"),
-                    multispace1,
-                    tag_no_case("KEY"),
-                )),
-                tag_no_case("UNIQUE"),
-                recognize((
-                    tag_no_case("NOT"),
-                    multispace1,
-                    tag_no_case("NULL"),
-                )),
-                recognize((
-                    tag_no_case("CHECK"),
-                    parse_comment0,
-                    Self::parse_parens,
-                )),
-                Self::pg_parse_fkaction,
-                recognize((
-                    tag_no_case("DEFAULT"),
-                    parse_comment1,
-                    alt((
+                value(
+                    Constraint::PrimaryKey,
+                    (tag_no_case("PRIMARY"), multispace1, tag_no_case("KEY")),
+                ),
+                value(Constraint::Unique, tag_no_case("UNIQUE")),
+                value(
+                    Constraint::NotNull,
+                    (tag_no_case("NOT"), multispace1, tag_no_case("NULL")),
+                ),
+                preceded(
+                    (tag_no_case("CHECK"), parse_comment0),
+                    Self::parse_parens.map(Constraint::Check),
+                ),
+                preceded(
+                    (tag_no_case("DEFAULT"), parse_comment1),
+                    recognize(alt((
                         delimited(
                             tag("\""),
                             alt((
@@ -708,18 +622,24 @@ impl<'a> Lexer<'a> {
                             tag("'"),
                         ),
                         Self::parse_parens,
-                    )),
-                )),
-                recognize((
-                    tag_no_case("REFERENCES"),
-                    parse_comment1,
-                    parse_ident,
-                    opt(delimited(
-                        (parse_comment0, tag("(")),
+                    )))
+                    .map(Constraint::Def),
+                ),
+                preceded(
+                    (tag_no_case("REFERENCES"), parse_comment1),
+                    (
                         parse_ident,
-                        tag(")"),
-                    )),
-                )),
+                        opt(delimited(
+                            (parse_comment0, tag("("), parse_comment0),
+                            parse_ident,
+                            (parse_comment0, tag(")")),
+                        )),
+                    )
+                        .map(|(table, col)| {
+                            Constraint::ForeignKey { table, col }
+                        }),
+                ),
+                Self::pg_parse_fkaction,
             )),
         ))
         .parse(input)
@@ -1152,6 +1072,23 @@ pub(crate) enum Created<'a> {
         included: Option<Vec<String>>,
         predicate: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OnEvent {
+    Delete,
+    Update,
+}
+
+#[derive(Clone, Debug)]
+enum Constraint<'a> {
+    PrimaryKey,
+    Unique,
+    NotNull,
+    Check(&'a str),
+    Def(&'a str),
+    ForeignKey { table: &'a str, col: Option<&'a str> },
+    FkAction { event: OnEvent, action: FkAction },
 }
 
 #[cfg(test)]
