@@ -1,3 +1,5 @@
+use std::ops::{Index, IndexMut};
+
 use crate::{
     Error, ErrorKind, IdentType, Result, SqlColumn, SupportedDBs,
     lexer::{Created, Lexer, parse_comment0},
@@ -6,15 +8,82 @@ use hashbrown::HashMap;
 use indexmap::IndexMap;
 use nom::{Offset, bytes::complete::tag};
 
-pub type ColMap = IndexMap<String, SqlColumn>;
-pub type TableMap = HashMap<String, SqlTable>;
+#[derive(Default, Clone, Debug)]
+pub struct ColMap {
+    columns: IndexMap<String, SqlColumn>,
+}
 
+impl ColMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn insert(&mut self, key: String, value: SqlColumn) -> Option<SqlColumn> {
+        self.columns.insert(key, value)
+    }
+    pub fn get(&self, key: &str) -> Option<&SqlColumn> {
+        self.columns.get(key)
+    }
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut SqlColumn> {
+        self.columns.get_mut(key)
+    }
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.columns.contains_key(key)
+    }
+}
+
+impl Index<&str> for ColMap {
+    type Output = SqlColumn;
+
+    fn index(&self, index: &str) -> &Self::Output {
+        &self.columns[index]
+    }
+}
+
+impl IndexMut<&str> for ColMap {
+    fn index_mut(&mut self, index: &str) -> &mut Self::Output {
+        &mut self.columns[index]
+    }
+}
+
+#[derive(Default, Clone, Debug)]
 pub struct SqlTable {
     pub columns: ColMap,
     #[allow(dead_code)]
     pub primary_key: Option<String>,
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct TableMap {
+    tables: HashMap<String, SqlTable>,
+}
+
+impl TableMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn insert(&mut self, key: String, value: SqlTable) -> Option<SqlTable> {
+        self.tables.insert(key, value)
+    }
+    pub fn get(&self, key: &str) -> Option<&SqlTable> {
+        self.tables.get(key)
+    }
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut SqlTable> {
+        self.tables.get_mut(key)
+    }
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.tables.contains_key(key)
+    }
+}
+
+impl Index<&str> for TableMap {
+    type Output = SqlTable;
+
+    fn index(&self, index: &str) -> &Self::Output {
+        &self.tables[index]
+    }
+}
+
+#[derive(Default, Clone, Debug)]
 pub struct SqlDB {
     pub tables: TableMap,
     pub db: SupportedDBs,
@@ -75,7 +144,7 @@ impl SqlDB {
 
                         if included.iter().any(|column| {
                             col = column;
-                            !table.columns.contains_key(*column)
+                            !table.columns.contains_key(column)
                         }) {
                             return Err(Error::new(
                                 ErrorKind::MissingIdent(

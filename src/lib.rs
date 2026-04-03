@@ -7,7 +7,8 @@ pub use column::*;
 pub(crate) use error::*;
 pub use schema::*;
 
-#[derive(Clone, Copy)]
+#[derive(Default, Clone, Copy, Debug)]
 pub enum SupportedDBs {
+    #[default]
     PostgreSQL,
 }

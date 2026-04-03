@@ -182,7 +182,7 @@ impl<'a> Lexer<'a> {
                         ref_cols.as_ref().and_then(|cols| cols.get(i).copied());
                     fks.push((ref_table, ref_col));
 
-                    if let Some(col) = columns.get_mut(*fk_col) {
+                    if let Some(col) = columns.get_mut(fk_col) {
                         col.foreign_key = Some(ForeignKey {
                             table: ref_table.to_string(),
                             column: ref_col.map(String::from),
