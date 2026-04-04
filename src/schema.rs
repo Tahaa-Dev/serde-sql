@@ -49,11 +49,12 @@ impl IndexMut<&str> for ColMap {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Default, Clone, Debug)]
 pub struct SqlTable {
     pub columns: ColMap,
-    #[allow(dead_code)]
     pub primary_key: Option<PrimaryKey>,
+    pub if_not_exists: bool,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -113,7 +114,12 @@ impl SqlDB {
             let created = lexer.parse_statement()?;
 
             match created {
-                Created::Table { name, columns, primary_key } => {
+                Created::Table {
+                    name,
+                    columns,
+                    primary_key,
+                    if_not_exists,
+                } => {
                     match &primary_key {
                         Some(Pk::Single(_)) => {}
                         Some(Pk::Composite(v)) => {
@@ -142,6 +148,7 @@ impl SqlDB {
                                 columns,
                                 primary_key: primary_key
                                     .map(|pk| pk.into_primary_key()),
+                                if_not_exists,
                             },
                         )
                         .is_some()

@@ -80,21 +80,7 @@ impl<'a> Lexer<'a> {
             self.start_offset(),
         )?;
 
-        self.parser(opt((
-            tag_no_case("IF"),
-            parse_comment1,
-            tag_no_case("NOT"),
-            parse_comment1,
-            tag_no_case("EXISTS"),
-            parse_comment1,
-        )))
-        .map_into(
-            ErrorKind::UnexpectedToken {
-                found: self.next_token().to_string(),
-                expected: "IF NOT EXISTS".to_string(),
-            },
-            self.start_offset(),
-        )?;
+        let if_not_exists = self.parse_if_not_exists()?;
 
         let table_name = self.parser(parse_ident).map_into(
             ErrorKind::UnexpectedToken {
@@ -123,15 +109,8 @@ impl<'a> Lexer<'a> {
                 let (input, _) = tag_no_case("KEY")(input)?;
                 let (input, _) = parse_comment0(input)?;
 
-                let (input, fk_cols) = delimited(
-                    (tag("("), parse_comment0),
-                    separated_list1(
-                        (parse_comment0, tag(","), parse_comment0),
-                        parse_ident,
-                    ),
-                    (parse_comment0, tag(")")),
-                )
-                .parse(input)?;
+                let (input, fk_cols) =
+                    Self::parse_list(parse_ident).parse(input)?;
 
                 let (input, _) = parse_comment1(input)?;
                 let (input, _) = tag_no_case("REFERENCES")(input)?;
@@ -140,15 +119,8 @@ impl<'a> Lexer<'a> {
                 let (input, ref_table) = parse_ident(input)?;
                 let (input, _) = parse_comment0(input)?;
 
-                let (input, ref_cols) = opt(delimited(
-                    (tag("("), parse_comment0),
-                    separated_list1(
-                        (parse_comment0, tag(","), parse_comment0),
-                        parse_ident,
-                    ),
-                    (parse_comment0, tag(")")),
-                ))
-                .parse(input)?;
+                let (input, ref_cols) =
+                    opt(Self::parse_list(parse_ident)).parse(input)?;
 
                 let mut on_delete = None;
                 let mut on_update = None;
@@ -211,14 +183,7 @@ impl<'a> Lexer<'a> {
                         tag_no_case("KEY"),
                         parse_comment0,
                     ),
-                    delimited(
-                        (tag("("), parse_comment0),
-                        separated_list1(
-                            (parse_comment0, tag(","), parse_comment0),
-                            parse_ident,
-                        ),
-                        tag(")"),
-                    ),
+                    Self::parse_list(parse_ident),
                 )
                 .parse(input)?;
 
@@ -246,7 +211,8 @@ impl<'a> Lexer<'a> {
                 let mut check = None;
                 let mut foreign_key: Option<ForeignKey> = None;
 
-                let (input, pk) = Self::pg_parse_constraints(input)?;
+                let (input, pk) =
+                    many0(Self::pg_parse_constraint).parse(input)?;
 
                 for s in pk {
                     match s {
@@ -344,15 +310,7 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        self.parser(delimited(
-            (tag("("), parse_comment0),
-            separated_list1(
-                (parse_comment0, tag(","), parse_comment0),
-                parse_col_def,
-            ),
-            (parse_comment0, tag(")")),
-        ))
-        .map_into(
+        self.parser(Self::parse_list(parse_col_def)).map_into(
             ErrorKind::UnexpectedToken {
                 found: self.next_token().to_string(),
                 expected: "column definitions".to_string(),
@@ -362,7 +320,26 @@ impl<'a> Lexer<'a> {
 
         self.fks.extend_from_slice(&fks);
 
-        Ok(Created::Table { name: table_name, columns, primary_key })
+        Ok(Created::Table {
+            name: table_name,
+            columns,
+            primary_key,
+            if_not_exists,
+        })
+    }
+
+    fn parse_list<
+        T,
+        P1: Parser<&'a str, Output = T, Error = nom::error::Error<&'a str>>,
+    >(
+        f: P1,
+    ) -> impl Parser<&'a str, Output = Vec<T>, Error = nom::error::Error<&'a str>>
+    {
+        delimited(
+            (tag("("), parse_comment0),
+            separated_list1((parse_comment0, tag(","), parse_comment0), f),
+            (parse_comment0, tag(")")),
+        )
     }
 
     fn pg_parse_fkaction(input: &str) -> IResult<&str, Constraint<'a>> {
@@ -407,7 +384,9 @@ impl<'a> Lexer<'a> {
         Ok((input, Constraint::FkAction { event, action }))
     }
 
-    fn pg_parse_type(input: &str) -> IResult<&str, (&str, Option<Vec<usize>>)> {
+    fn pg_parse_type(
+        input: &'a str,
+    ) -> IResult<&'a str, (&'a str, Option<Vec<usize>>)> {
         let (input, sql_type) = alt((
             recognize((
                 tag_no_case("DOUBLE"),
@@ -536,14 +515,7 @@ impl<'a> Lexer<'a> {
 
         let (input, args) = opt(preceded(
             parse_comment0,
-            delimited(
-                (tag("("), parse_comment0),
-                separated_list1(
-                    (parse_comment0, tag(","), parse_comment0),
-                    map_res(digit1, |s: &str| s.parse::<usize>()),
-                ),
-                (parse_comment0, tag(")")),
-            ),
+            Self::parse_list(map_res(digit1, |n: &'a str| n.parse::<usize>())),
         ))
         .parse(input)?;
 
@@ -637,10 +609,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn pg_parse_constraints(
-        input: &'a str,
-    ) -> IResult<&'a str, Vec<Constraint<'a>>> {
-        many0(preceded(
+    fn pg_parse_constraint(input: &'a str) -> IResult<&'a str, Constraint<'a>> {
+        preceded(
             parse_comment1,
             alt((
                 value(
@@ -698,7 +668,7 @@ impl<'a> Lexer<'a> {
                     (
                         parse_ident,
                         opt(delimited(
-                            (parse_comment0, tag("("), parse_comment0),
+                            (tag("("), parse_comment0),
                             parse_ident,
                             (parse_comment0, tag(")")),
                         )),
@@ -709,7 +679,7 @@ impl<'a> Lexer<'a> {
                 ),
                 Self::pg_parse_fkaction,
             )),
-        ))
+        )
         .parse(input)
     }
 
@@ -762,6 +732,25 @@ impl<'a> Lexer<'a> {
         )))
     }
 
+    fn parse_if_not_exists(&mut self) -> Result<bool> {
+        self.parser(opt((
+            tag_no_case("IF"),
+            parse_comment1,
+            tag_no_case("NOT"),
+            parse_comment1,
+            tag_no_case("EXISTS"),
+            parse_comment1,
+        )))
+        .map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "IF NOT EXISTS".to_string(),
+            },
+            self.start_offset(),
+        )
+        .map(|is| is.is_some())
+    }
+
     fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
         self.parser(parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
@@ -782,21 +771,7 @@ impl<'a> Lexer<'a> {
             )?
             .is_some();
 
-        self.parser(opt((
-            tag_no_case("IF"),
-            parse_comment1,
-            tag_no_case("NOT"),
-            parse_comment1,
-            tag_no_case("EXISTS"),
-            parse_comment1,
-        )))
-        .map_into(
-            ErrorKind::UnexpectedToken {
-                found: self.next_token().to_string(),
-                expected: "IF NOT EXISTS".to_string(),
-            },
-            self.start_offset(),
-        )?;
+        self.parse_if_not_exists()?;
 
         let (index_name, table_name): (Option<&str>, &str) = self
             .parser(alt((
@@ -837,86 +812,69 @@ impl<'a> Lexer<'a> {
         )?;
 
         let cols = self
-            .parser(delimited(
-                (tag("("), parse_comment0),
-                separated_list1(
-                    (parse_comment0, tag(","), parse_comment0),
-                    map_res(
-                        (
-                            alt((
-                                recognize((
-                                    many0(alt((alphanumeric1, tag("_")))),
-                                    delimited(
-                                        (
-                                            parse_comment0,
-                                            tag("("),
-                                            parse_comment0,
-                                        ),
-                                        parse_ident,
-                                        (parse_comment0, tag("(")),
-                                    ),
-                                )),
+            .parser(Self::parse_list(map_res(
+                (
+                    alt((
+                        recognize((
+                            many0(alt((alphanumeric1, tag("_")))),
+                            delimited(
+                                (parse_comment0, tag("("), parse_comment0),
                                 parse_ident,
-                            )),
-                            opt(preceded(parse_comment1, parse_ident)),
-                            opt(preceded(
-                                parse_comment1,
-                                alt((
-                                    value(
-                                        IndexSortOrder::Asc,
-                                        tag_no_case("ASC"),
-                                    ),
-                                    value(
-                                        IndexSortOrder::Desc,
-                                        tag_no_case("DESC"),
-                                    ),
-                                )),
-                            )),
-                            opt(preceded(
-                                parse_comment1,
-                                alt((
-                                    value(
-                                        IndexNullOrder::NullsFirst,
-                                        (
-                                            tag_no_case("NULLS"),
-                                            parse_comment1,
-                                            tag_no_case("FIRST"),
-                                        ),
-                                    ),
-                                    value(
-                                        IndexNullOrder::NullsLast,
-                                        (
-                                            tag_no_case("NULLS"),
-                                            parse_comment1,
-                                            tag_no_case("LAST"),
-                                        ),
-                                    ),
-                                )),
-                            )),
-                        ),
-                        |(name, opclass, sort1, sort2)| {
-                            Ok::<
-                                (&str, SqlIndexColumn),
-                                nom::Err<nom::error::Error<&str>>,
-                            >((
-                                name,
-                                SqlIndexColumn {
-                                    name: index_name.map(String::from),
-                                    opclass: opclass.map(String::from),
-                                    sort_order: sort1,
-                                    null_order: sort2,
-                                    method: index_method,
-                                    is_concurrent,
-                                    is_unique,
-                                    included_cols: None,
-                                    predicate: None,
-                                },
-                            ))
-                        },
-                    ),
+                                (parse_comment0, tag("(")),
+                            ),
+                        )),
+                        parse_ident,
+                    )),
+                    opt(preceded(parse_comment1, parse_ident)),
+                    opt(preceded(
+                        parse_comment1,
+                        alt((
+                            value(IndexSortOrder::Asc, tag_no_case("ASC")),
+                            value(IndexSortOrder::Desc, tag_no_case("DESC")),
+                        )),
+                    )),
+                    opt(preceded(
+                        parse_comment1,
+                        alt((
+                            value(
+                                IndexNullOrder::NullsFirst,
+                                (
+                                    tag_no_case("NULLS"),
+                                    parse_comment1,
+                                    tag_no_case("FIRST"),
+                                ),
+                            ),
+                            value(
+                                IndexNullOrder::NullsLast,
+                                (
+                                    tag_no_case("NULLS"),
+                                    parse_comment1,
+                                    tag_no_case("LAST"),
+                                ),
+                            ),
+                        )),
+                    )),
                 ),
-                (parse_comment0, tag(")")),
-            ))
+                |(name, opclass, sort1, sort2)| {
+                    Ok::<
+                        (&str, SqlIndexColumn),
+                        nom::Err<nom::error::Error<&str>>,
+                    >((
+                        name,
+                        SqlIndexColumn {
+                            name: index_name.map(String::from),
+                            opclass: opclass.map(String::from),
+                            sort_order: sort1,
+                            null_order: sort2,
+                            method: index_method,
+                            is_concurrent,
+                            is_unique,
+                            included_cols: None,
+                            predicate: None,
+                        },
+                    ))
+                },
+            )))
             .map_into(
                 ErrorKind::UnexpectedToken {
                     found: self.next_token().to_string(),
@@ -996,14 +954,7 @@ impl<'a> Lexer<'a> {
     fn pg_parse_include(&mut self) -> Result<Option<Vec<&'a str>>> {
         self.parser(opt(preceded(
             (parse_comment1, tag_no_case("INCLUDE"), parse_comment0),
-            delimited(
-                (tag("("), parse_comment0),
-                separated_list1(
-                    (parse_comment0, tag(","), parse_comment0),
-                    parse_ident,
-                ),
-                (parse_comment0, tag(")")),
-            ),
+            Self::parse_list(parse_ident),
         )))
         .map_into(
             ErrorKind::UnexpectedToken {
@@ -1022,18 +973,11 @@ impl<'a> Lexer<'a> {
         let pairs = self
             .parser(opt(preceded(
                 (parse_comment1, tag_no_case("WITH"), parse_comment0),
-                delimited(
-                    (tag("("), parse_comment0),
-                    separated_list1(
-                        (parse_comment0, tag(","), parse_comment0),
-                        separated_pair(
-                            parse_ident,
-                            (parse_comment0, tag("="), parse_comment0),
-                            alphanumeric1,
-                        ),
-                    ),
-                    (parse_comment0, tag(")")),
-                ),
+                Self::parse_list(separated_pair(
+                    parse_ident,
+                    (parse_comment0, tag("="), parse_comment0),
+                    alphanumeric1,
+                )),
             )))
             .map_into(
                 ErrorKind::UnexpectedToken {
@@ -1299,6 +1243,7 @@ pub(crate) enum Created<'a> {
         name: &'a str,
         columns: ColMap,
         primary_key: Option<Pk<'a>>,
+        if_not_exists: bool,
     },
 
     Index {
