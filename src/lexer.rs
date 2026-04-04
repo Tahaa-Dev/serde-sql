@@ -33,15 +33,15 @@ pub(crate) struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub(crate) fn parse_statement(&mut self) -> Result<Created<'_>> {
-        // parse_comment0 cannot fail
-        self.parser(parse_comment0)
+        // Self::parse_comment0 cannot fail
+        self.parser(Self::parse_comment0)
             .map_into(ErrorKind::UnexpectedEOF, self.start_offset())?;
 
         let create = self.parser(tag_no_case("CREATE")).map_into(
             ErrorKind::InvalidCommand(self.next_token().to_string()),
             self.start_offset(),
         )?;
-        self.parser(parse_comment1).map_into(
+        self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(create.to_string()),
             self.start_offset(),
         )?;
@@ -50,7 +50,7 @@ impl<'a> Lexer<'a> {
             .parser(alt((
                 tag_no_case("TABLE"),
                 recognize((
-                    opt((tag_no_case("UNIQUE"), parse_comment1)),
+                    opt((tag_no_case("UNIQUE"), Self::parse_comment1)),
                     tag_no_case("INDEX"),
                 )),
             )))
@@ -75,21 +75,21 @@ impl<'a> Lexer<'a> {
         let mut primary_key: Option<Pk> = None;
         let mut fks = vec![];
 
-        self.parser(parse_comment1).map_into(
+        self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
             self.start_offset(),
         )?;
 
         let if_not_exists = self.parse_if_not_exists()?;
 
-        let table_name = self.parser(parse_ident).map_into(
+        let table_name = self.parser(Self::parse_ident).map_into(
             ErrorKind::UnexpectedToken {
                 found: self.next_token().to_string(),
                 expected: "table name".to_string(),
             },
             self.start_offset(),
         )?;
-        self.parser(parse_comment0).map_into(
+        self.parser(Self::parse_comment0).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
             self.start_offset(),
         )?;
@@ -102,32 +102,34 @@ impl<'a> Lexer<'a> {
             .parse(input)
             .is_ok()
             {
-                let (input, _) = parse_comment0(input)?;
+                let (input, _) = Self::parse_comment0(input)?;
 
                 let (input, _) = tag_no_case("FOREIGN")(input)?;
-                let (input, _) = parse_comment1(input)?;
+                let (input, _) = Self::parse_comment1(input)?;
                 let (input, _) = tag_no_case("KEY")(input)?;
-                let (input, _) = parse_comment0(input)?;
+                let (input, _) = Self::parse_comment0(input)?;
 
                 let (input, fk_cols) =
-                    Self::parse_list(parse_ident).parse(input)?;
+                    Self::parse_list(Self::parse_ident).parse(input)?;
 
-                let (input, _) = parse_comment1(input)?;
+                let (input, _) = Self::parse_comment1(input)?;
                 let (input, _) = tag_no_case("REFERENCES")(input)?;
-                let (input, _) = parse_comment1(input)?;
+                let (input, _) = Self::parse_comment1(input)?;
 
-                let (input, ref_table) = parse_ident(input)?;
-                let (input, _) = parse_comment0(input)?;
+                let (input, ref_table) = Self::parse_ident(input)?;
+                let (input, _) = Self::parse_comment0(input)?;
 
                 let (input, ref_cols) =
-                    opt(Self::parse_list(parse_ident)).parse(input)?;
+                    opt(Self::parse_list(Self::parse_ident)).parse(input)?;
 
                 let mut on_delete = None;
                 let mut on_update = None;
 
-                let (input, action) =
-                    opt(preceded(parse_comment0, Self::pg_parse_fkaction))
-                        .parse(input)?;
+                let (input, action) = opt(preceded(
+                    Self::parse_comment0,
+                    Self::pg_parse_fkaction,
+                ))
+                .parse(input)?;
                 if let Some(action) = action
                     && let Constraint::FkAction { event, action } = action
                 {
@@ -137,9 +139,11 @@ impl<'a> Lexer<'a> {
                     }
                 }
 
-                let (input, action) =
-                    opt(preceded(parse_comment0, Self::pg_parse_fkaction))
-                        .parse(input)?;
+                let (input, action) = opt(preceded(
+                    Self::parse_comment0,
+                    Self::pg_parse_fkaction,
+                ))
+                .parse(input)?;
                 if let Some(action) = action
                     && let Constraint::FkAction { event, action } = action
                 {
@@ -179,11 +183,11 @@ impl<'a> Lexer<'a> {
                 let (input, pks) = preceded(
                     (
                         tag_no_case("PRIMARY"),
-                        parse_comment1,
+                        Self::parse_comment1,
                         tag_no_case("KEY"),
-                        parse_comment0,
+                        Self::parse_comment0,
                     ),
-                    Self::parse_list(parse_ident),
+                    Self::parse_list(Self::parse_ident),
                 )
                 .parse(input)?;
 
@@ -191,12 +195,12 @@ impl<'a> Lexer<'a> {
 
                 Ok((input, ()))
             } else {
-                let (input, col_name) = parse_ident(input)?;
-                let (input, _) = parse_comment1(input)?;
+                let (input, col_name) = Self::parse_ident(input)?;
+                let (input, _) = Self::parse_comment1(input)?;
 
                 let (input, (sql_type, args)) = Self::pg_parse_type(input)?;
                 let (input, arr) =
-                    opt(preceded(parse_comment0, many1(tag("[]"))))
+                    opt(preceded(Self::parse_comment0, many1(tag("[]"))))
                         .parse(input)?;
 
                 let args = args.unwrap_or(Vec::new());
@@ -336,21 +340,24 @@ impl<'a> Lexer<'a> {
     ) -> impl Parser<&'a str, Output = Vec<T>, Error = nom::error::Error<&'a str>>
     {
         delimited(
-            (tag("("), parse_comment0),
-            separated_list1((parse_comment0, tag(","), parse_comment0), f),
-            (parse_comment0, tag(")")),
+            (tag("("), Self::parse_comment0),
+            separated_list1(
+                (Self::parse_comment0, tag(","), Self::parse_comment0),
+                f,
+            ),
+            (Self::parse_comment0, tag(")")),
         )
     }
 
     fn pg_parse_fkaction(input: &str) -> IResult<&str, Constraint<'a>> {
         let (input, _) = tag_no_case("ON")(input)?;
-        let (input, _) = parse_comment1(input)?;
+        let (input, _) = Self::parse_comment1(input)?;
         let (input, event) = alt((
             value(OnEvent::Delete, tag_no_case("DELETE")),
             value(OnEvent::Update, tag_no_case("UPDATE")),
         ))
         .parse(input)?;
-        let (input, _) = parse_comment1(input)?;
+        let (input, _) = Self::parse_comment1(input)?;
         let (input, action) = alt((
             value(FkAction::Restrict, tag_no_case("RESTRICT")),
             value(FkAction::Cascade, tag_no_case("CASCADE")),
@@ -514,7 +521,7 @@ impl<'a> Lexer<'a> {
         .parse(input)?;
 
         let (input, args) = opt(preceded(
-            parse_comment0,
+            Self::parse_comment0,
             Self::parse_list(map_res(digit1, |n: &'a str| n.parse::<usize>())),
         ))
         .parse(input)?;
@@ -611,7 +618,7 @@ impl<'a> Lexer<'a> {
 
     fn pg_parse_constraint(input: &'a str) -> IResult<&'a str, Constraint<'a>> {
         preceded(
-            parse_comment1,
+            Self::parse_comment1,
             alt((
                 value(
                     Constraint::PrimaryKey,
@@ -623,11 +630,11 @@ impl<'a> Lexer<'a> {
                     (tag_no_case("NOT"), multispace1, tag_no_case("NULL")),
                 ),
                 preceded(
-                    (tag_no_case("CHECK"), parse_comment0),
+                    (tag_no_case("CHECK"), Self::parse_comment0),
                     Self::parse_parens.map(Constraint::Check),
                 ),
                 preceded(
-                    (tag_no_case("DEFAULT"), parse_comment1),
+                    (tag_no_case("DEFAULT"), Self::parse_comment1),
                     recognize(alt((
                         delimited(
                             tag("\""),
@@ -664,13 +671,13 @@ impl<'a> Lexer<'a> {
                     .map(Constraint::Def),
                 ),
                 preceded(
-                    (tag_no_case("REFERENCES"), parse_comment1),
+                    (tag_no_case("REFERENCES"), Self::parse_comment1),
                     (
-                        parse_ident,
+                        Self::parse_ident,
                         opt(delimited(
-                            (tag("("), parse_comment0),
-                            parse_ident,
-                            (parse_comment0, tag(")")),
+                            (tag("("), Self::parse_comment0),
+                            Self::parse_ident,
+                            (Self::parse_comment0, tag(")")),
                         )),
                     )
                         .map(|(table, col)| {
@@ -735,11 +742,11 @@ impl<'a> Lexer<'a> {
     fn parse_if_not_exists(&mut self) -> Result<bool> {
         self.parser(opt((
             tag_no_case("IF"),
-            parse_comment1,
+            Self::parse_comment1,
             tag_no_case("NOT"),
-            parse_comment1,
+            Self::parse_comment1,
             tag_no_case("EXISTS"),
-            parse_comment1,
+            Self::parse_comment1,
         )))
         .map_into(
             ErrorKind::UnexpectedToken {
@@ -752,7 +759,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
-        self.parser(parse_comment1).map_into(
+        self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
             self.start_offset(),
         )?;
@@ -760,7 +767,7 @@ impl<'a> Lexer<'a> {
         let is_concurrent = self
             .parser(opt(terminated(
                 tag_no_case("CONCURRENTLY"),
-                parse_comment1,
+                Self::parse_comment1,
             )))
             .map_into(
                 ErrorKind::UnexpectedToken {
@@ -776,12 +783,18 @@ impl<'a> Lexer<'a> {
         let (index_name, table_name): (Option<&str>, &str) = self
             .parser(alt((
                 (
-                    opt(terminated(parse_ident, parse_comment1)),
-                    preceded((tag_no_case("ON"), parse_comment1), parse_ident),
+                    opt(terminated(Self::parse_ident, Self::parse_comment1)),
+                    preceded(
+                        (tag_no_case("ON"), Self::parse_comment1),
+                        Self::parse_ident,
+                    ),
                 ),
                 (
                     opt(recognize(not(is_not("")))),
-                    preceded((tag_no_case("ON"), parse_comment1), parse_ident),
+                    preceded(
+                        (tag_no_case("ON"), Self::parse_comment1),
+                        Self::parse_ident,
+                    ),
                 ),
             )))
             .map_into(
@@ -792,7 +805,7 @@ impl<'a> Lexer<'a> {
                 self.start_offset(),
             )?;
 
-        self.parser(parse_comment1).map_into(
+        self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
             self.start_offset(),
         )?;
@@ -806,7 +819,7 @@ impl<'a> Lexer<'a> {
                 self.start_offset(),
             )?;
 
-        self.parser(parse_comment1).map_into(
+        self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
             self.start_offset(),
         )?;
@@ -818,29 +831,33 @@ impl<'a> Lexer<'a> {
                         recognize((
                             many0(alt((alphanumeric1, tag("_")))),
                             delimited(
-                                (parse_comment0, tag("("), parse_comment0),
-                                parse_ident,
-                                (parse_comment0, tag("(")),
+                                (
+                                    Self::parse_comment0,
+                                    tag("("),
+                                    Self::parse_comment0,
+                                ),
+                                Self::parse_ident,
+                                (Self::parse_comment0, tag("(")),
                             ),
                         )),
-                        parse_ident,
+                        Self::parse_ident,
                     )),
-                    opt(preceded(parse_comment1, parse_ident)),
+                    opt(preceded(Self::parse_comment1, Self::parse_ident)),
                     opt(preceded(
-                        parse_comment1,
+                        Self::parse_comment1,
                         alt((
                             value(IndexSortOrder::Asc, tag_no_case("ASC")),
                             value(IndexSortOrder::Desc, tag_no_case("DESC")),
                         )),
                     )),
                     opt(preceded(
-                        parse_comment1,
+                        Self::parse_comment1,
                         alt((
                             value(
                                 IndexNullOrder::NullsFirst,
                                 (
                                     tag_no_case("NULLS"),
-                                    parse_comment1,
+                                    Self::parse_comment1,
                                     tag_no_case("FIRST"),
                                 ),
                             ),
@@ -848,7 +865,7 @@ impl<'a> Lexer<'a> {
                                 IndexNullOrder::NullsLast,
                                 (
                                     tag_no_case("NULLS"),
-                                    parse_comment1,
+                                    Self::parse_comment1,
                                     tag_no_case("LAST"),
                                 ),
                             ),
@@ -909,7 +926,7 @@ impl<'a> Lexer<'a> {
     ) -> Result<(Option<&'a str>, Option<IndexMethod>)> {
         let idx_method = self
             .parser(opt(preceded(
-                (tag_no_case("USING"), parse_comment1),
+                (tag_no_case("USING"), Self::parse_comment1),
                 alphanumeric1,
             )))
             .map_into(
@@ -953,8 +970,12 @@ impl<'a> Lexer<'a> {
 
     fn pg_parse_include(&mut self) -> Result<Option<Vec<&'a str>>> {
         self.parser(opt(preceded(
-            (parse_comment1, tag_no_case("INCLUDE"), parse_comment0),
-            Self::parse_list(parse_ident),
+            (
+                Self::parse_comment1,
+                tag_no_case("INCLUDE"),
+                Self::parse_comment0,
+            ),
+            Self::parse_list(Self::parse_ident),
         )))
         .map_into(
             ErrorKind::UnexpectedToken {
@@ -972,10 +993,14 @@ impl<'a> Lexer<'a> {
     ) -> Result<()> {
         let pairs = self
             .parser(opt(preceded(
-                (parse_comment1, tag_no_case("WITH"), parse_comment0),
+                (
+                    Self::parse_comment1,
+                    tag_no_case("WITH"),
+                    Self::parse_comment0,
+                ),
                 Self::parse_list(separated_pair(
-                    parse_ident,
-                    (parse_comment0, tag("="), parse_comment0),
+                    Self::parse_ident,
+                    (Self::parse_comment0, tag("="), Self::parse_comment0),
                     alphanumeric1,
                 )),
             )))
@@ -1128,7 +1153,11 @@ impl<'a> Lexer<'a> {
     fn pg_parse_where(&mut self) -> Result<Option<String>> {
         let out = self
             .parser(opt(preceded(
-                (parse_comment1, tag_no_case("WHERE"), parse_comment1),
+                (
+                    Self::parse_comment1,
+                    tag_no_case("WHERE"),
+                    Self::parse_comment1,
+                ),
                 recognize(many1(alt((
                     recognize(delimited(
                         tag("'"),
@@ -1198,43 +1227,43 @@ impl<'a> Lexer<'a> {
     pub(crate) fn start_offset(&self) -> usize {
         self.orig.offset(self.statements) + 1
     }
-}
 
-fn parse_ident(input: &str) -> IResult<&str, &str> {
-    alt((recognize(many1(alt((tag("_"), alphanumeric1)))), |input| {
-        let (input, _) = tag("\"")(input)?;
-        let (input, output) = nom::bytes::complete::is_not("\"")(input)?;
-        let (input, _) = tag("\"")(input)?;
-        Ok((input, output))
-    }))
-    .parse(input)
-}
+    fn parse_ident(input: &str) -> IResult<&str, &str> {
+        alt((recognize(many1(alt((tag("_"), alphanumeric1)))), |input| {
+            let (input, _) = tag("\"")(input)?;
+            let (input, output) = nom::bytes::complete::is_not("\"")(input)?;
+            let (input, _) = tag("\"")(input)?;
+            Ok((input, output))
+        }))
+        .parse(input)
+    }
 
-pub(crate) fn parse_comment0(input: &str) -> IResult<&str, &str> {
-    let (input, _) = multispace0(input)?;
+    pub(crate) fn parse_comment0(input: &str) -> IResult<&str, &str> {
+        let (input, _) = multispace0(input)?;
 
-    let (input, _) = many0(alt((
-        // many0(none_of("\r\n")) instead of is_not("\r\n") is because is_not fails if the pattern
-        // is not found while many0(none_of) doesn't which is needed since the comment could be at
-        // EOF where is_not wouldn't find \n or \r and it would fail
-        value((), (tag("--"), many0(none_of("\r\n")), multispace0)),
-        value((), (tag("/*"), take_until("*/"), tag("*/"), multispace0)),
-    )))
-    .parse(input)?;
+        let (input, _) = many0(alt((
+            // many0(none_of("\r\n")) instead of is_not("\r\n") is because is_not fails if the pattern
+            // is not found while many0(none_of) doesn't which is needed since the comment could be at
+            // EOF where is_not wouldn't find \n or \r and it would fail
+            value((), (tag("--"), many0(none_of("\r\n")), multispace0)),
+            value((), (tag("/*"), take_until("*/"), tag("*/"), multispace0)),
+        )))
+        .parse(input)?;
 
-    Ok((input, ""))
-}
+        Ok((input, ""))
+    }
 
-pub(crate) fn parse_comment1(input: &str) -> IResult<&str, &str> {
-    let (input, _) = multispace1(input)?;
+    pub(crate) fn parse_comment1(input: &str) -> IResult<&str, &str> {
+        let (input, _) = multispace1(input)?;
 
-    let (input, _) = many0(alt((
-        value((), (tag("--"), many0(none_of("\r\n")), multispace1)),
-        value((), (tag("/*"), take_until("*/"), tag("*/"), multispace1)),
-    )))
-    .parse(input)?;
+        let (input, _) = many0(alt((
+            value((), (tag("--"), many0(none_of("\r\n")), multispace1)),
+            value((), (tag("/*"), take_until("*/"), tag("*/"), multispace1)),
+        )))
+        .parse(input)?;
 
-    Ok((input, ""))
+        Ok((input, ""))
+    }
 }
 
 #[derive(Debug, Clone)]

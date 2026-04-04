@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use crate::{
     Error, ErrorKind, IdentType, PrimaryKey, Result, SqlColumn, SupportedDBs,
-    lexer::{Created, Lexer, Pk, parse_comment0},
+    lexer::{Created, Lexer, Pk},
 };
 use hashbrown::HashMap;
 use indexmap::IndexMap;
@@ -105,7 +105,7 @@ impl SqlDB {
         let mut lexer = Lexer { db, statements, fks: vec![], orig: statements };
 
         loop {
-            lexer.parser(parse_comment0)?;
+            lexer.parser(Lexer::parse_comment0)?;
 
             if lexer.statements.is_empty() {
                 break;
@@ -215,7 +215,11 @@ impl SqlDB {
                 }
             }
 
-            lexer.parser((parse_comment0, tag(";"), parse_comment0))?;
+            lexer.parser((
+                Lexer::parse_comment0,
+                tag(";"),
+                Lexer::parse_comment0,
+            ))?;
 
             if lexer.statements.is_empty() {
                 break;
