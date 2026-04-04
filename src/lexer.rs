@@ -102,73 +102,16 @@ impl<'a> Lexer<'a> {
             .parse(input)
             .is_ok()
             {
-                let (input, _) = Self::parse_comment0(input)?;
+                let (input, fk_map) =
+                    Self::pg_parse_table_level_fk(input, &mut fks)?;
 
-                let (input, _) = tag_no_case("FOREIGN")(input)?;
-                let (input, _) = Self::parse_comment1(input)?;
-                let (input, _) = tag_no_case("KEY")(input)?;
-                let (input, _) = Self::parse_comment0(input)?;
-
-                let (input, fk_cols) =
-                    Self::parse_list(Self::parse_ident).parse(input)?;
-
-                let (input, _) = Self::parse_comment1(input)?;
-                let (input, _) = tag_no_case("REFERENCES")(input)?;
-                let (input, _) = Self::parse_comment1(input)?;
-
-                let (input, ref_table) = Self::parse_ident(input)?;
-                let (input, _) = Self::parse_comment0(input)?;
-
-                let (input, ref_cols) =
-                    opt(Self::parse_list(Self::parse_ident)).parse(input)?;
-
-                let mut on_delete = None;
-                let mut on_update = None;
-
-                let (input, action) = opt(preceded(
-                    Self::parse_comment0,
-                    Self::pg_parse_fkaction,
-                ))
-                .parse(input)?;
-                if let Some(action) = action
-                    && let Constraint::FkAction { event, action } = action
-                {
-                    match event {
-                        OnEvent::Delete => on_delete = Some(action),
-                        OnEvent::Update => on_update = Some(action),
-                    }
-                }
-
-                let (input, action) = opt(preceded(
-                    Self::parse_comment0,
-                    Self::pg_parse_fkaction,
-                ))
-                .parse(input)?;
-                if let Some(action) = action
-                    && let Constraint::FkAction { event, action } = action
-                {
-                    match event {
-                        OnEvent::Delete => on_delete = Some(action),
-                        OnEvent::Update => on_update = Some(action),
-                    }
-                }
-
-                for (i, fk_col) in fk_cols.iter().enumerate() {
-                    let ref_col =
-                        ref_cols.as_ref().and_then(|cols| cols.get(i).copied());
-                    fks.push((ref_table, ref_col));
-
+                for (fk, fk_col) in fk_map {
                     if let Some(col) = columns.get_mut(fk_col) {
-                        col.foreign_key = Some(ForeignKey {
-                            table: ref_table.to_string(),
-                            column: ref_col.map(String::from),
-                            on_delete,
-                            on_update,
-                        });
+                        col.foreign_key = Some(fk);
                     } else {
                         return Err(nom::Err::Failure(nom::error::Error::new(
                             input,
-                            nom::error::ErrorKind::IsNot,
+                            nom::error::ErrorKind::NoneOf,
                         )));
                     }
                 }
@@ -330,6 +273,77 @@ impl<'a> Lexer<'a> {
             primary_key,
             if_not_exists,
         })
+    }
+
+    fn pg_parse_table_level_fk(
+        input: &'a str,
+        fks: &mut Vec<(&'a str, Option<&'a str>)>,
+    ) -> IResult<&'a str, impl Iterator<Item = (ForeignKey, &'a str)>> {
+        let (input, _) = Self::parse_comment0(input)?;
+
+        let (input, _) = tag_no_case("FOREIGN")(input)?;
+        let (input, _) = Self::parse_comment1(input)?;
+        let (input, _) = tag_no_case("KEY")(input)?;
+        let (input, _) = Self::parse_comment0(input)?;
+
+        let (input, fk_cols): (&'a str, Vec<&'a str>) =
+            Self::parse_list(Self::parse_ident).parse(input)?;
+
+        let (input, _) = Self::parse_comment1(input)?;
+        let (input, _) = tag_no_case("REFERENCES")(input)?;
+        let (input, _) = Self::parse_comment1(input)?;
+
+        let (input, ref_table) = Self::parse_ident(input)?;
+        let (input, _) = Self::parse_comment0(input)?;
+
+        let (input, ref_cols) =
+            opt(Self::parse_list(Self::parse_ident)).parse(input)?;
+
+        let mut on_delete = None;
+        let mut on_update = None;
+
+        let (input, action) =
+            opt(preceded(Self::parse_comment0, Self::pg_parse_fkaction))
+                .parse(input)?;
+        if let Some(action) = action
+            && let Constraint::FkAction { event, action } = action
+        {
+            match event {
+                OnEvent::Delete => on_delete = Some(action),
+                OnEvent::Update => on_update = Some(action),
+            }
+        }
+
+        let (input, action) =
+            opt(preceded(Self::parse_comment0, Self::pg_parse_fkaction))
+                .parse(input)?;
+        if let Some(action) = action
+            && let Constraint::FkAction { event, action } = action
+        {
+            match event {
+                OnEvent::Delete => on_delete = Some(action),
+                OnEvent::Update => on_update = Some(action),
+            }
+        }
+
+        Ok((
+            input,
+            fk_cols.into_iter().enumerate().map(move |(i, fk_col)| {
+                let ref_col =
+                    ref_cols.as_ref().and_then(|cols| cols.get(i).copied());
+                fks.push((ref_table, ref_col));
+
+                (
+                    ForeignKey {
+                        table: ref_table.to_string(),
+                        column: ref_col.map(String::from),
+                        on_delete,
+                        on_update,
+                    },
+                    fk_col,
+                )
+            }),
+        ))
     }
 
     fn parse_list<
