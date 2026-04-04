@@ -145,7 +145,6 @@ impl<'a> Lexer<'a> {
                 let (input, arr) =
                     opt(preceded(Self::parse_comment0, many1(tag("[]"))))
                         .parse(input)?;
-
                 let args = args.unwrap_or(Vec::new());
                 let ty = sql_type.to_uppercase();
 
@@ -344,65 +343,6 @@ impl<'a> Lexer<'a> {
                 )
             }),
         ))
-    }
-
-    fn parse_list<
-        T,
-        P1: Parser<&'a str, Output = T, Error = nom::error::Error<&'a str>>,
-    >(
-        f: P1,
-    ) -> impl Parser<&'a str, Output = Vec<T>, Error = nom::error::Error<&'a str>>
-    {
-        delimited(
-            (tag("("), Self::parse_comment0),
-            separated_list1(
-                (Self::parse_comment0, tag(","), Self::parse_comment0),
-                f,
-            ),
-            (Self::parse_comment0, tag(")")),
-        )
-    }
-
-    fn pg_parse_fkaction(input: &str) -> IResult<&str, Constraint<'a>> {
-        let (input, _) = tag_no_case("ON")(input)?;
-        let (input, _) = Self::parse_comment1(input)?;
-        let (input, event) = alt((
-            value(OnEvent::Delete, tag_no_case("DELETE")),
-            value(OnEvent::Update, tag_no_case("UPDATE")),
-        ))
-        .parse(input)?;
-        let (input, _) = Self::parse_comment1(input)?;
-        let (input, action) = alt((
-            value(FkAction::Restrict, tag_no_case("RESTRICT")),
-            value(FkAction::Cascade, tag_no_case("CASCADE")),
-            value(
-                FkAction::NoAction,
-                recognize((
-                    tag_no_case("NO"),
-                    multispace1,
-                    tag_no_case("ACTION"),
-                )),
-            ),
-            value(
-                FkAction::SetNull,
-                recognize((
-                    tag_no_case("SET"),
-                    multispace1,
-                    tag_no_case("NULL"),
-                )),
-            ),
-            value(
-                FkAction::SetDefault,
-                recognize((
-                    tag_no_case("SET"),
-                    multispace1,
-                    tag_no_case("DEFAULT"),
-                )),
-            ),
-        ))
-        .parse(input)?;
-
-        Ok((input, Constraint::FkAction { event, action }))
     }
 
     fn pg_parse_type(
@@ -700,72 +640,46 @@ impl<'a> Lexer<'a> {
         .parse(input)
     }
 
-    fn parse_parens(input: &str) -> IResult<&str, &str> {
-        let mut depth = 0;
-        let mut chars = input.char_indices().peekable();
-        let mut in_single_quote = false;
-        let mut in_double_quote = false;
-        let mut escaped = false;
+    fn pg_parse_fkaction(input: &str) -> IResult<&str, Constraint<'a>> {
+        let (input, _) = tag_no_case("ON")(input)?;
+        let (input, _) = Self::parse_comment1(input)?;
+        let (input, event) = alt((
+            value(OnEvent::Delete, tag_no_case("DELETE")),
+            value(OnEvent::Update, tag_no_case("UPDATE")),
+        ))
+        .parse(input)?;
+        let (input, _) = Self::parse_comment1(input)?;
+        let (input, action) = alt((
+            value(FkAction::Restrict, tag_no_case("RESTRICT")),
+            value(FkAction::Cascade, tag_no_case("CASCADE")),
+            value(
+                FkAction::NoAction,
+                recognize((
+                    tag_no_case("NO"),
+                    multispace1,
+                    tag_no_case("ACTION"),
+                )),
+            ),
+            value(
+                FkAction::SetNull,
+                recognize((
+                    tag_no_case("SET"),
+                    multispace1,
+                    tag_no_case("NULL"),
+                )),
+            ),
+            value(
+                FkAction::SetDefault,
+                recognize((
+                    tag_no_case("SET"),
+                    multispace1,
+                    tag_no_case("DEFAULT"),
+                )),
+            ),
+        ))
+        .parse(input)?;
 
-        while let Some((i, c)) = chars.next() {
-            match c {
-                '\\' => escaped = !escaped,
-
-                '\'' if !in_double_quote => {
-                    if chars.peek().is_some_and(|(_, ch)| *ch != '\'')
-                        && !escaped
-                    {
-                        in_single_quote = !in_single_quote;
-                    }
-                }
-
-                '"' if !in_single_quote => {
-                    if chars.peek().is_some_and(|(_, ch)| *ch != '"')
-                        && !escaped
-                    {
-                        in_double_quote = !in_double_quote;
-                    }
-                }
-
-                '(' if !in_single_quote && !in_double_quote => {
-                    depth += 1;
-                }
-
-                ')' if !in_single_quote && !in_double_quote => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok((&input[i + 1..], &input[..i + 1]));
-                    }
-                }
-
-                _ => escaped = false,
-            }
-        }
-
-        // Reached EOF without finding closing paren
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::TakeUntil,
-        )))
-    }
-
-    fn parse_if_not_exists(&mut self) -> Result<bool> {
-        self.parser(opt((
-            tag_no_case("IF"),
-            Self::parse_comment1,
-            tag_no_case("NOT"),
-            Self::parse_comment1,
-            tag_no_case("EXISTS"),
-            Self::parse_comment1,
-        )))
-        .map_into(
-            ErrorKind::UnexpectedToken {
-                found: self.next_token().to_string(),
-                expected: "IF NOT EXISTS".to_string(),
-            },
-            self.start_offset(),
-        )
-        .map(|is| is.is_some())
+        Ok((input, Constraint::FkAction { event, action }))
     }
 
     fn pg_parse_index(&mut self, is_unique: bool) -> Result<Created<'_>> {
@@ -1199,6 +1113,91 @@ impl<'a> Lexer<'a> {
             )?;
 
         Ok(out.map(|s| s.trim().to_string()))
+    }
+
+    fn parse_if_not_exists(&mut self) -> Result<bool> {
+        self.parser(opt((
+            tag_no_case("IF"),
+            Self::parse_comment1,
+            tag_no_case("NOT"),
+            Self::parse_comment1,
+            tag_no_case("EXISTS"),
+            Self::parse_comment1,
+        )))
+        .map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "IF NOT EXISTS".to_string(),
+            },
+            self.start_offset(),
+        )
+        .map(|is| is.is_some())
+    }
+
+    fn parse_list<
+        T,
+        P1: Parser<&'a str, Output = T, Error = nom::error::Error<&'a str>>,
+    >(
+        f: P1,
+    ) -> impl Parser<&'a str, Output = Vec<T>, Error = nom::error::Error<&'a str>>
+    {
+        delimited(
+            (tag("("), Self::parse_comment0),
+            separated_list1(
+                (Self::parse_comment0, tag(","), Self::parse_comment0),
+                f,
+            ),
+            (Self::parse_comment0, tag(")")),
+        )
+    }
+
+    fn parse_parens(input: &str) -> IResult<&str, &str> {
+        let mut depth = 0;
+        let mut chars = input.char_indices().peekable();
+        let mut in_single_quote = false;
+        let mut in_double_quote = false;
+        let mut escaped = false;
+
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' => escaped = !escaped,
+
+                '\'' if !in_double_quote => {
+                    if chars.peek().is_some_and(|(_, ch)| *ch != '\'')
+                        && !escaped
+                    {
+                        in_single_quote = !in_single_quote;
+                    }
+                }
+
+                '"' if !in_single_quote => {
+                    if chars.peek().is_some_and(|(_, ch)| *ch != '"')
+                        && !escaped
+                    {
+                        in_double_quote = !in_double_quote;
+                    }
+                }
+
+                '(' if !in_single_quote && !in_double_quote => {
+                    depth += 1;
+                }
+
+                ')' if !in_single_quote && !in_double_quote => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok((&input[i + 1..], &input[..i + 1]));
+                    }
+                }
+
+                _ => escaped = false,
+            }
+        }
+
+        // Reached EOF without finding closing paren
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeUntil,
+        )))
     }
 
     pub(crate) fn parser<
