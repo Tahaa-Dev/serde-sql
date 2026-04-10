@@ -851,7 +851,19 @@ impl<'a> Lexer<'a> {
             self.start_offset(),
         )?;
 
-        self.pg_apply_with_params(&mut index_method, idx_method)?;
+        let pairs = self.parser(Self::pg_parse_with_params).map_into(
+            ErrorKind::UnexpectedToken {
+                found: self.next_token().to_string(),
+                expected: "WITH clause".to_string(),
+            },
+            self.start_offset(),
+        )?;
+
+        Self::pg_apply_with_params(
+            &mut index_method,
+            pairs,
+            self.start_offset(),
+        )?;
 
         let predicate = self.pg_parse_where().map_into(
             ErrorKind::UnexpectedToken {
@@ -972,41 +984,36 @@ impl<'a> Lexer<'a> {
         )
     }
 
-    pub(crate) fn pg_apply_with_params(
-        &mut self,
-        index_method: &mut Option<IndexMethod>,
-        idx_method: Option<&str>,
-    ) -> Result<()> {
-        let pairs = self
-            .parser(opt(preceded(
-                (
-                    Self::parse_comment1,
-                    tag_no_case("WITH"),
-                    Self::parse_comment0,
-                ),
-                Self::parse_list(separated_pair(
-                    Self::parse_ident,
-                    (Self::parse_comment0, tag("="), Self::parse_comment0),
-                    alphanumeric1,
-                )),
-            )))
-            .map_into(
-                ErrorKind::UnexpectedToken {
-                    found: self.next_token().to_string(),
-                    expected: "WITH clause".to_string(),
-                },
-                self.start_offset(),
-            )?;
+    pub(crate) fn pg_parse_with_params(
+        input: &'a str,
+    ) -> IResult<&'a str, Option<Vec<(&'a str, &'a str)>>> {
+        opt(preceded(
+            (Self::parse_comment1, tag_no_case("WITH"), Self::parse_comment0),
+            Self::parse_list(separated_pair(
+                Self::parse_ident,
+                (Self::parse_comment0, tag("="), Self::parse_comment0),
+                alphanumeric1,
+            )),
+        ))
+        .parse(input)
+    }
 
-        if pairs.is_some() {
-            idx_method.ok_or(Error::new(
-                ErrorKind::UnexpectedToken {
-                    expected: self.statements.into(),
-                    found: "INDEX METHOD".into(),
-                },
-                self.start_offset(),
-            ))?;
-        }
+    pub(crate) fn pg_apply_with_params(
+        index_method: &mut Option<IndexMethod>,
+        pairs: Option<Vec<(&str, &str)>>,
+        position: usize,
+    ) -> Result<()> {
+        let mut o = IndexMethod::Other;
+        let index_method: &mut IndexMethod = if pairs.is_some() {
+            index_method.as_mut().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidIndexMethod("".to_string()),
+                    position,
+                )
+            })?
+        } else {
+            index_method.as_mut().unwrap_or(&mut o)
+        };
 
         for (key, value) in pairs.unwrap_or(vec![]) {
             let res = match key.to_lowercase().as_str() {
@@ -1016,15 +1023,10 @@ impl<'a> Lexer<'a> {
                             ErrorKind::ParseFailure(
                                 "invalid fillfactor value".into(),
                             ),
-                            self.start_offset(),
+                            position,
                         )
                     })?;
-                    let mut r = Ok(());
-                    index_method.as_mut().map(|m| {
-                        r = m.set_fillfactor(v);
-                        m
-                    });
-                    r
+                    index_method.set_fillfactor(v)
                 }
 
                 "fastupdate" => {
@@ -1033,15 +1035,10 @@ impl<'a> Lexer<'a> {
                             ErrorKind::ParseFailure(
                                 "invalid fastupdate value".into(),
                             ),
-                            self.start_offset(),
+                            position,
                         )
                     })?;
-                    let mut r = Ok(());
-                    index_method.as_mut().map(|m| {
-                        r = m.set_fastupdate(v);
-                        m
-                    });
-                    r
+                    index_method.set_fastupdate(v)
                 }
 
                 "gin_pending_list_limit" => {
@@ -1050,15 +1047,10 @@ impl<'a> Lexer<'a> {
                             ErrorKind::ParseFailure(
                                 "invalid gin_pending_list_limit value".into(),
                             ),
-                            self.start_offset(),
+                            position,
                         )
                     })?;
-                    let mut r = Ok(());
-                    index_method.as_mut().map(|m| {
-                        r = m.set_gin_pending_list_limit(v);
-                        m
-                    });
-                    r
+                    index_method.set_gin_pending_list_limit(v)
                 }
 
                 "buffering" => {
@@ -1069,17 +1061,12 @@ impl<'a> Lexer<'a> {
                         _ => {
                             return Err(Error::new(
                                 ErrorKind::InvalidValue(value.to_string()),
-                                self.start_offset(),
+                                position,
                             ));
                         }
                     };
 
-                    let mut r = Ok(());
-                    index_method.as_mut().map(|m| {
-                        r = m.set_buffering(v);
-                        m
-                    });
-                    r
+                    index_method.set_buffering(v)
                 }
 
                 "autosummarize" => {
@@ -1089,17 +1076,12 @@ impl<'a> Lexer<'a> {
                         _ => {
                             return Err(Error::new(
                                 ErrorKind::InvalidValue(value.to_string()),
-                                self.start_offset(),
+                                position,
                             ));
                         }
                     };
 
-                    let mut r = Ok(());
-                    index_method.as_mut().map(|m| {
-                        r = m.set_autosummarize(v);
-                        m
-                    });
-                    r
+                    index_method.set_autosummarize(v)
                 }
 
                 "pages_per_range" => {
@@ -1108,15 +1090,10 @@ impl<'a> Lexer<'a> {
                             ErrorKind::ParseFailure(
                                 "invalid pages_per_range value".into(),
                             ),
-                            self.start_offset(),
+                            position,
                         )
                     })?;
-                    let mut r = Ok(());
-                    index_method.as_mut().map(|m| {
-                        r = m.set_pages_per_range(v);
-                        m
-                    });
-                    r
+                    index_method.set_pages_per_range(v)
                 }
 
                 _ => Err(()),
@@ -1128,7 +1105,7 @@ impl<'a> Lexer<'a> {
                         key: key.to_string(),
                         value: value.to_string(),
                     },
-                    self.start_offset(),
+                    position,
                 )
             })?;
         }
