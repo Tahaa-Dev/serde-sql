@@ -1,6 +1,7 @@
 mod column;
 pub mod error;
 mod lexer;
+mod lexer_tests;
 mod schema;
 
 pub use column::*;
