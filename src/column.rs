@@ -230,10 +230,15 @@ pub enum PrimaryKey {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Exclude {
-    column: String,
-    operator: ExcludeOperator,
-    index: ExcludeIndex,
+pub struct ExcludeColumn {
+    pub name: String,
+    pub operator: ExcludeOperator,
+    pub method: Option<IndexMethod>,
+    pub opclass: Option<String>,
+    pub sort_order: Option<IndexSortOrder>,
+    pub null_order: Option<IndexNullOrder>,
+    pub included_cols: Option<Vec<String>>,
+    pub predicate: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -313,7 +318,7 @@ impl std::fmt::Display for ExcludeOperator {
 }
 
 impl ExcludeOperator {
-    fn from_string(s: &str) -> Self {
+    pub fn from_string(s: &str) -> Self {
         match s {
             "=" => Self::Equal,
             "<>" => Self::NotEqual,
@@ -349,14 +354,4 @@ impl ExcludeOperator {
             _ => Self::Unknown(s.to_string()),
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExcludeIndex {
-    pub opclass: Option<String>,
-    pub sort_order: Option<IndexSortOrder>,
-    pub null_order: Option<IndexNullOrder>,
-    pub method: Option<IndexMethod>,
-    pub included_cols: Option<Vec<String>>,
-    pub predicate: Option<String>,
 }

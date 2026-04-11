@@ -3,9 +3,10 @@
 #![allow(clippy::manual_inspect)]
 
 use crate::{
-    ColMap, Error, ErrorKind, FkAction, ForeignKey, GistBufMode, IndexMethod,
-    IndexNullOrder, IndexSortOrder, IntervalField, ParserExt, PrimaryKey,
-    Result, SqlColumn, SqlIndexColumn, SqlType, StrExt, SupportedDBs,
+    ColMap, Error, ErrorKind, ExcludeColumn, ExcludeOperator, FkAction,
+    ForeignKey, GistBufMode, IndexMethod, IndexNullOrder, IndexSortOrder,
+    IntervalField, ParserExt, PrimaryKey, Result, SqlColumn, SqlIndexColumn,
+    SqlType, StrExt, SupportedDBs,
 };
 
 use nom::{
@@ -78,6 +79,7 @@ impl<'a> Lexer<'a> {
         let mut primary_key: Option<Pk> = None;
         let mut fks = vec![];
         let mut check = None;
+        let mut exclude = None;
 
         self.parser(Self::parse_comment1).map_into(
             ErrorKind::NonWhitespace(self.next_token().to_string()),
@@ -127,6 +129,13 @@ impl<'a> Lexer<'a> {
             .parse(input)
             .is_ok()
             {
+                if primary_key.is_some() {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        "",
+                        nom::error::ErrorKind::Fail,
+                    )));
+                }
+
                 let (input, pks) = preceded(
                     (
                         tag_no_case("PRIMARY"),
@@ -142,41 +151,127 @@ impl<'a> Lexer<'a> {
 
                 Ok((input, ()))
             } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
-                "UNIQUE",
-            ))
-            .parse(input)
-            .is_ok()
-            {
-                let (input, cols) = preceded(
-                    (tag_no_case("UNIQUE"), Self::parse_comment0),
-                    Self::parse_list(Self::parse_ident),
-                )
-                .parse(input)?;
-
-                for col in cols {
-                    if let Some(col) = columns.get_mut(col) {
-                        col.index = Some(SqlIndexColumn::default());
-                    } else {
-                        return Err(nom::Err::Failure(nom::error::Error::new(
-                            input,
-                            nom::error::ErrorKind::NoneOf,
-                        )));
-                    }
-                }
-
-                Ok((input, ()))
-            } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
                 "CHECK",
             ))
             .parse(input)
             .is_ok()
             {
+                if check.is_some() {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        "",
+                        nom::error::ErrorKind::Fail,
+                    )));
+                }
+
                 let (input, constraint) = Self::pg_parse_constraint(input)?;
 
                 check = Some(match constraint {
                     Constraint::Check(s) => s[1..s.len() - 1].to_string(),
                     _ => unreachable!(),
                 });
+
+                Ok((input, ()))
+            } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
+                "UNIQUE",
+            ))
+            .parse(input)
+            .is_ok()
+            {
+                let (input, _) = preceded(
+                    (tag_no_case("UNIQUE"), Self::parse_comment0),
+                    Self::parse_list(map_res(Self::parse_ident, |col| {
+                        if let Some(col) = columns.get_mut(col) {
+                            col.index = Some(SqlIndexColumn::default());
+                            Ok(())
+                        } else {
+                            Err(nom::Err::<nom::error::Error<&str>>::Failure(
+                                nom::error::Error::new(
+                                    input,
+                                    nom::error::ErrorKind::NoneOf,
+                                ),
+                            ))
+                        }
+                    })),
+                )
+                .parse(input)?;
+
+                Ok((input, ()))
+            } else if peek(tag_no_case::<&str, &str, nom::error::Error<&str>>(
+                "EXCLUDE",
+            ))
+            .parse(input)
+            .is_ok()
+            {
+                if exclude.is_some() {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        "",
+                        nom::error::ErrorKind::Fail,
+                    )));
+                }
+
+                let (input, (method, cols)) = preceded(
+                    tag_no_case("EXCLUDE"),
+                    (
+                        opt(preceded(
+                            Self::parse_comment1,
+                            Self::pg_parse_index_method,
+                        )),
+                        preceded(
+                            Self::parse_comment1,
+                            Self::parse_list((
+                                Self::parse_index_col,
+                                preceded(
+                                    (
+                                        Self::parse_comment1,
+                                        tag_no_case("WITH"),
+                                        Self::parse_comment1,
+                                    ),
+                                    is_not(" ,)/"),
+                                ),
+                            )),
+                        ),
+                    ),
+                )
+                .parse(input)?;
+
+                let (input, included) = Self::pg_parse_include(input)?;
+                let (input, with_params) = Self::pg_parse_with_params(input)?;
+                let (input, predicate) = Self::pg_parse_where(input)?;
+
+                let (_, mut method) = Self::match_idx_method(method)?;
+                Self::pg_apply_with_params(&mut method, with_params, 0)
+                    .map_err(|_| {
+                        nom::Err::Failure(nom::error::Error::new(
+                            "",
+                            nom::error::ErrorKind::Fail,
+                        ))
+                    })?;
+
+                let mut is_err = false;
+                let map = cols.iter().map(
+                    |((name, opclass, sort_order, null_order), operator)| {
+                        is_err = is_err || !columns.contains_key(name);
+                        ExcludeColumn {
+                            name: name.to_string(),
+                            operator: ExcludeOperator::from_string(*operator),
+                            method,
+                            opclass: (*opclass).map(String::from),
+                            sort_order: *sort_order,
+                            null_order: *null_order,
+                            included_cols: included.clone(),
+                            predicate: predicate.clone(),
+                        }
+                    },
+                );
+
+                exclude = Some(map.collect());
+
+                if is_err {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        "",
+                        nom::error::ErrorKind::Fail,
+                    )));
+                }
 
                 Ok((input, ()))
             } else {
@@ -317,6 +412,7 @@ impl<'a> Lexer<'a> {
             primary_key,
             if_not_exists,
             check,
+            exclude,
         })
     }
 
@@ -787,13 +883,14 @@ impl<'a> Lexer<'a> {
             self.start_offset(),
         )?;
 
-        let idx_method = self.parser(Self::pg_parse_index_method).map_into(
-            ErrorKind::UnexpectedToken {
-                found: self.next_token().to_string(),
-                expected: "index method name".to_string(),
-            },
-            self.start_offset(),
-        )?;
+        let idx_method =
+            self.parser(opt(Self::pg_parse_index_method)).map_into(
+                ErrorKind::UnexpectedToken {
+                    found: self.next_token().to_string(),
+                    expected: "index method name".to_string(),
+                },
+                self.start_offset(),
+            )?;
 
         let (_, mut index_method) = Self::match_idx_method(idx_method)
             .map_err(|_| {
@@ -843,7 +940,7 @@ impl<'a> Lexer<'a> {
                 self.start_offset(),
             )?;
 
-        let included = self.pg_parse_include().map_into(
+        let included = self.parser(Self::pg_parse_include).map_into(
             ErrorKind::UnexpectedToken {
                 found: self.next_token().to_string(),
                 expected: "INCLUDE clause".to_string(),
@@ -865,7 +962,7 @@ impl<'a> Lexer<'a> {
             self.start_offset(),
         )?;
 
-        let predicate = self.pg_parse_where().map_into(
+        let predicate = self.parser(Self::pg_parse_where).map_into(
             ErrorKind::UnexpectedToken {
                 found: self.next_token().to_string(),
                 expected: "WHERE clause".to_string(),
@@ -876,14 +973,9 @@ impl<'a> Lexer<'a> {
         Ok(Created::Index { table_name, columns: cols, included, predicate })
     }
 
-    pub(crate) fn pg_parse_index_method(
-        input: &str,
-    ) -> IResult<&str, Option<&str>> {
-        opt(preceded(
-            (tag_no_case("USING"), Self::parse_comment1),
-            alphanumeric1,
-        ))
-        .parse(input)
+    pub(crate) fn pg_parse_index_method(input: &str) -> IResult<&str, &str> {
+        preceded((tag_no_case("USING"), Self::parse_comment1), alphanumeric1)
+            .parse(input)
     }
 
     pub(crate) fn match_idx_method(
@@ -924,7 +1016,7 @@ impl<'a> Lexer<'a> {
         (
             alt((
                 recognize((
-                    many1(alt((alphanumeric1, tag("_")))),
+                    Self::parse_ident,
                     delimited(
                         (Self::parse_comment0, tag("("), Self::parse_comment0),
                         Self::parse_ident,
@@ -933,7 +1025,38 @@ impl<'a> Lexer<'a> {
                 )),
                 Self::parse_ident,
             )),
-            opt(preceded(Self::parse_comment1, Self::parse_ident)),
+            |i| {
+                if peek(alt((
+                    (
+                        Self::parse_comment1,
+                        tag_no_case("WITH"),
+                        Self::parse_comment1,
+                    ),
+                    (
+                        Self::parse_comment1,
+                        tag_no_case("ASC"),
+                        Self::parse_comment1,
+                    ),
+                    (
+                        Self::parse_comment1,
+                        tag_no_case("DESC"),
+                        Self::parse_comment1,
+                    ),
+                    (
+                        Self::parse_comment1,
+                        tag_no_case("NULLS"),
+                        Self::parse_comment1,
+                    ),
+                )))
+                .parse(i)
+                .is_ok()
+                {
+                    Ok((i, None))
+                } else {
+                    opt(preceded(Self::parse_comment1, Self::parse_ident))
+                        .parse(i)
+                }
+            },
             opt(preceded(
                 Self::parse_comment1,
                 alt((
@@ -966,22 +1089,20 @@ impl<'a> Lexer<'a> {
             .parse(input)
     }
 
-    pub(crate) fn pg_parse_include(&mut self) -> Result<Option<Vec<&'a str>>> {
-        self.parser(opt(preceded(
+    pub(crate) fn pg_parse_include(
+        input: &'a str,
+    ) -> IResult<&'a str, Option<Vec<String>>> {
+        opt(preceded(
             (
                 Self::parse_comment1,
                 tag_no_case("INCLUDE"),
                 Self::parse_comment0,
             ),
-            Self::parse_list(Self::parse_ident),
-        )))
-        .map_into(
-            ErrorKind::UnexpectedToken {
-                found: self.next_token().to_string(),
-                expected: "INCLUDE clause".to_string(),
-            },
-            self.start_offset(),
-        )
+            Self::parse_list(map_res(Self::parse_ident, |s| {
+                Ok::<String, nom::Err<nom::error::Error<&str>>>(s.to_string())
+            })),
+        ))
+        .parse(input)
     }
 
     pub(crate) fn pg_parse_with_params(
@@ -1113,9 +1234,11 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    pub(crate) fn pg_parse_where(&mut self) -> Result<Option<String>> {
-        let out = self
-            .parser(opt(preceded(
+    pub(crate) fn pg_parse_where(
+        input: &'a str,
+    ) -> IResult<&'a str, Option<String>> {
+        opt(map_res(
+            preceded(
                 (
                     Self::parse_comment1,
                     tag_no_case("WHERE"),
@@ -1142,16 +1265,14 @@ impl<'a> Lexer<'a> {
                     )),
                     is_not(";'\""),
                 )))),
-            )))
-            .map_into(
-                ErrorKind::UnexpectedToken {
-                    found: self.next_token().to_string(),
-                    expected: "WHERE clause".to_string(),
-                },
-                self.start_offset(),
-            )?;
-
-        Ok(out.map(|s| s.trim().to_string()))
+            ),
+            |s| {
+                Ok::<String, nom::Err<nom::error::Error<&'a str>>>(
+                    s.trim().to_string(),
+                )
+            },
+        ))
+        .parse(input)
     }
 
     pub(crate) fn parse_if_not_exists(&mut self) -> Result<bool> {
@@ -1329,12 +1450,13 @@ pub(crate) enum Created<'a> {
         primary_key: Option<Pk<'a>>,
         if_not_exists: bool,
         check: Option<String>,
+        exclude: Option<Vec<ExcludeColumn>>,
     },
 
     Index {
         table_name: &'a str,
         columns: Vec<(&'a str, SqlIndexColumn)>,
-        included: Option<Vec<&'a str>>,
+        included: Option<Vec<String>>,
         predicate: Option<String>,
     },
 }

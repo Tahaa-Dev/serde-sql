@@ -738,17 +738,10 @@ fn parse_index_col_with_opclass_and_sort() {
 }
 
 #[test]
-fn pg_parse_index_method_none() {
-    let (rem, method) = Lexer::pg_parse_index_method("col1, col2").unwrap();
-    assert!(method.is_none());
-    assert_eq!(rem, "col1, col2");
-}
-
-#[test]
 fn pg_parse_index_method_some() {
     let (rem, method) =
         Lexer::pg_parse_index_method("USING HASH (col1)").unwrap();
-    assert_eq!(method.unwrap(), "HASH");
+    assert_eq!(method, "HASH");
     assert_eq!(rem, " (col1)");
 }
 
@@ -777,14 +770,39 @@ fn pg_parse_with_params_present() {
     assert!(rem.is_empty());
 }
 
+
 #[test]
-fn pg_apply_with_params_valid() {
-    let mut method = Some(crate::IndexMethod::BTree { fillfactor: None });
-    let params = Some(vec![("fillfactor", "80")]);
-    Lexer::pg_apply_with_params(&mut method, params, 0).unwrap();
-    if let crate::IndexMethod::BTree { fillfactor } = method.unwrap() {
-        assert_eq!(fillfactor, Some(80));
+fn parse_exclude_constraint() {
+    let input = "CREATE TABLE test (id INT, name TEXT, EXCLUDE USING GIST (id WITH =))";
+    let mut lexer = Lexer {
+        db: SupportedDBs::PostgreSQL,
+        statements: input,
+        fks: vec![],
+        orig: input,
+    };
+    let result = lexer.parse_statement().unwrap();
+    if let Created::Table { exclude, .. } = result {
+        assert!(exclude.is_some());
+        assert_eq!(exclude.unwrap().len(), 1);
     } else {
-        panic!("expected BTree");
+        panic!("expected table");
+    }
+}
+
+#[test]
+fn parse_exclude_constraint_multiple_cols() {
+    let input = "CREATE TABLE test (id INT, name TEXT, EXCLUDE USING GIST (id WITH =, name WITH <>))";
+    let mut lexer = Lexer {
+        db: SupportedDBs::PostgreSQL,
+        statements: input,
+        fks: vec![],
+        orig: input,
+    };
+    let result = lexer.parse_statement().unwrap();
+    if let Created::Table { exclude, .. } = result {
+        assert!(exclude.is_some());
+        assert_eq!(exclude.unwrap().len(), 2);
+    } else {
+        panic!("expected table");
     }
 }

@@ -1,7 +1,8 @@
 use std::ops::{Index, IndexMut};
 
 use crate::{
-    Error, ErrorKind, IdentType, PrimaryKey, Result, SqlColumn, SupportedDBs,
+    Error, ErrorKind, ExcludeColumn, IdentType, PrimaryKey, Result, SqlColumn,
+    SupportedDBs,
     lexer::{Created, Lexer, Pk},
 };
 use hashbrown::HashMap;
@@ -56,6 +57,7 @@ pub struct SqlTable {
     pub primary_key: Option<PrimaryKey>,
     pub if_not_exists: bool,
     pub check: Option<String>,
+    pub exclude: Option<Vec<ExcludeColumn>>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -121,6 +123,7 @@ impl SqlDB {
                     primary_key,
                     if_not_exists,
                     check,
+                    exclude,
                 } => {
                     match &primary_key {
                         Some(Pk::Single(_)) => {}
@@ -152,6 +155,7 @@ impl SqlDB {
                                     .map(|pk| pk.into_primary_key()),
                                 if_not_exists,
                                 check,
+                                exclude,
                             },
                         )
                         .is_some()
@@ -195,8 +199,6 @@ impl SqlDB {
                         }
                     }
 
-                    let included = included
-                        .map(|v| v.iter().map(|s| s.to_string()).collect());
                     for (col_name, mut index) in columns {
                         index.included_cols = included.clone();
                         index.predicate = predicate.clone();
