@@ -253,7 +253,7 @@ impl<'a> Lexer<'a> {
                         is_err = is_err || !columns.contains_key(name);
                         ExcludeColumn {
                             name: name.to_string(),
-                            operator: ExcludeOperator::from_string(*operator),
+                            operator: ExcludeOperator::from_string(operator),
                             method,
                             opclass: (*opclass).map(String::from),
                             sort_order: *sort_order,
@@ -1035,12 +1035,12 @@ impl<'a> Lexer<'a> {
                     (
                         Self::parse_comment1,
                         tag_no_case("ASC"),
-                        Self::parse_comment1,
+                        Self::parse_comment0,
                     ),
                     (
                         Self::parse_comment1,
                         tag_no_case("DESC"),
-                        Self::parse_comment1,
+                        Self::parse_comment0,
                     ),
                     (
                         Self::parse_comment1,

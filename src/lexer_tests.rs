@@ -738,6 +738,29 @@ fn parse_index_col_with_opclass_and_sort() {
 }
 
 #[test]
+fn parse_index_col_with_sort_and_null_order() {
+    let (rem, (name, opclass, sort, null_order)) =
+        Lexer::parse_index_col("col1 ASC NULLS LAST").unwrap();
+    assert_eq!(name, "col1");
+    assert!(opclass.is_none());
+    assert_eq!(sort.unwrap(), crate::IndexSortOrder::Asc);
+    assert_eq!(null_order.unwrap(), crate::IndexNullOrder::NullsLast);
+    assert!(rem.is_empty());
+}
+
+#[test]
+fn parse_index_col_with_only_sort() {
+    let (rem, (name, opclass, sort, null_order)) =
+        Lexer::parse_index_col("col1 DESC").unwrap();
+    assert_eq!(name, "col1");
+
+    assert!(opclass.is_none());
+    assert_eq!(sort, Some(crate::IndexSortOrder::Desc));
+    assert!(null_order.is_none());
+    assert!(rem.is_empty());
+}
+
+#[test]
 fn pg_parse_index_method_some() {
     let (rem, method) =
         Lexer::pg_parse_index_method("USING HASH (col1)").unwrap();
@@ -770,10 +793,10 @@ fn pg_parse_with_params_present() {
     assert!(rem.is_empty());
 }
 
-
 #[test]
 fn parse_exclude_constraint() {
-    let input = "CREATE TABLE test (id INT, name TEXT, EXCLUDE USING GIST (id WITH =))";
+    let input =
+        "CREATE TABLE test (id INT, name TEXT, EXCLUDE USING GIST (id WITH =))";
     let mut lexer = Lexer {
         db: SupportedDBs::PostgreSQL,
         statements: input,
